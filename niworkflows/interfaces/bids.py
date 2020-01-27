@@ -1,13 +1,7 @@
-# -*- coding: utf-8 -*-
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
-"""
-Interfaces for handling BIDS-like neuroimaging structures
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+"""Interfaces for handling BIDS-like neuroimaging structures."""
 
-"""
-
-import os
 from json import dumps
 from pathlib import Path
 from shutil import copytree, rmtree
@@ -21,8 +15,10 @@ from nipype.interfaces.base import (
     File, Directory, InputMultiObject, OutputMultiObject, Str,
     SimpleInterface,
 )
+from nipype.interfaces.io import add_traits
 from templateflow.api import templates as _get_template_list
 from ..utils.bids import BIDS_NAME, _init_layout
+from ..utils.images import overwrite_header
 from ..utils.misc import splitext as _splitext, _copy_any
 
 
@@ -30,18 +26,18 @@ STANDARD_SPACES = _get_template_list()
 LOGGER = logging.getLogger('nipype.interface')
 
 
-class BIDSBaseInputSpec(BaseInterfaceInputSpec):
+class _BIDSBaseInputSpec(BaseInterfaceInputSpec):
     bids_dir = traits.Either(
         (None, Directory(exists=True)), usedefault=True,
         desc='optional bids directory to initialize a new layout')
     bids_validate = traits.Bool(True, usedefault=True, desc='enable BIDS validator')
 
 
-class BIDSInfoInputSpec(BIDSBaseInputSpec):
+class _BIDSInfoInputSpec(_BIDSBaseInputSpec):
     in_file = File(mandatory=True, desc='input file, part of a BIDS tree')
 
 
-class BIDSInfoOutputSpec(DynamicTraitedSpec):
+class _BIDSInfoOutputSpec(DynamicTraitedSpec):
     subject = traits.Str()
     session = traits.Str()
     task = traits.Str()
@@ -53,7 +49,7 @@ class BIDSInfoOutputSpec(DynamicTraitedSpec):
 
 class BIDSInfo(SimpleInterface):
     """
-    Extract BIDS entities from a BIDS-conforming path
+    Extract BIDS entities from a BIDS-conforming path.
 
     This interface uses only the basename, not the path, to determine the
     subject, session, task, run, acquisition or reconstruction.
@@ -152,8 +148,9 @@ sub-01/func/ses-retest/sub-01_ses-retest_task-covertverbgeneration_bold.nii.gz''
     <BLANKLINE>
 
     """
-    input_spec = BIDSInfoInputSpec
-    output_spec = BIDSInfoOutputSpec
+
+    input_spec = _BIDSInfoInputSpec
+    output_spec = _BIDSInfoOutputSpec
     layout = None
 
     def _run_interface(self, runtime):
@@ -161,19 +158,18 @@ sub-01/func/ses-retest/sub-01_ses-retest_task-covertverbgeneration_bold.nii.gz''
         self.layout = _init_layout(self.inputs.in_file,
                                    self.layout,
                                    self.inputs.bids_validate)
-        params = self.layout.parse_file_entities(self.inputs.in_file,
-                                                 domains=['bids'])
+        params = self.layout.parse_file_entities(self.inputs.in_file)
         self._results = {key: params.get(key, Undefined)
-                         for key in BIDSInfoOutputSpec().get().keys()}
+                         for key in _BIDSInfoOutputSpec().get().keys()}
         return runtime
 
 
-class BIDSDataGrabberInputSpec(BaseInterfaceInputSpec):
+class _BIDSDataGrabberInputSpec(BaseInterfaceInputSpec):
     subject_data = traits.Dict(Str, traits.Any)
     subject_id = Str()
 
 
-class BIDSDataGrabberOutputSpec(TraitedSpec):
+class _BIDSDataGrabberOutputSpec(TraitedSpec):
     out_dict = traits.Dict(desc='output data structure')
     fmap = OutputMultiObject(desc='output fieldmaps')
     bold = OutputMultiObject(desc='output functional images')
@@ -186,7 +182,7 @@ class BIDSDataGrabberOutputSpec(TraitedSpec):
 
 class BIDSDataGrabber(SimpleInterface):
     """
-    Collect files from a BIDS directory structure
+    Collect files from a BIDS directory structure.
 
     >>> bids_src = BIDSDataGrabber(anat_only=False)
     >>> bids_src.inputs.subject_data = bids_collect_data(
@@ -198,8 +194,9 @@ class BIDSDataGrabber(SimpleInterface):
      '.../ds114/sub-01/ses-test/anat/sub-01_ses-test_T1w.nii.gz']
 
     """
-    input_spec = BIDSDataGrabberInputSpec
-    output_spec = BIDSDataGrabberOutputSpec
+
+    input_spec = _BIDSDataGrabberInputSpec
+    output_spec = _BIDSDataGrabberOutputSpec
     _require_funcs = True
 
     def __init__(self, *args, **kwargs):
@@ -230,7 +227,7 @@ class BIDSDataGrabber(SimpleInterface):
         return runtime
 
 
-class DerivativesDataSinkInputSpec(DynamicTraitedSpec, BaseInterfaceInputSpec):
+class _DerivativesDataSinkInputSpec(DynamicTraitedSpec, BaseInterfaceInputSpec):
     base_directory = traits.Directory(
         desc='Path to the base directory for storing data.')
     check_hdr = traits.Bool(True, usedefault=True, desc='fix headers of NIfTI outputs')
@@ -241,12 +238,13 @@ class DerivativesDataSinkInputSpec(DynamicTraitedSpec, BaseInterfaceInputSpec):
     in_file = InputMultiObject(File(exists=True), mandatory=True,
                                desc='the object to be saved')
     keep_dtype = traits.Bool(False, usedefault=True, desc='keep datatype suffix')
+    meta_dict = traits.DictStrAny(desc='an input dictionary containing metadata')
     source_file = File(exists=False, mandatory=True, desc='the input func file')
     space = Str('', usedefault=True, desc='Label for space field')
     suffix = Str('', usedefault=True, desc='suffix appended to source_file')
 
 
-class DerivativesDataSinkOutputSpec(TraitedSpec):
+class _DerivativesDataSinkOutputSpec(TraitedSpec):
     out_file = OutputMultiObject(File(exists=True, desc='written file path'))
     out_meta = OutputMultiObject(File(exists=True, desc='written JSON sidecar path'))
     compression = OutputMultiObject(
@@ -257,6 +255,8 @@ class DerivativesDataSinkOutputSpec(TraitedSpec):
 
 class DerivativesDataSink(SimpleInterface):
     """
+    Store derivative files.
+
     Saves the `in_file` into a BIDS-Derivatives folder provided
     by `base_directory`, given the input reference `source_file`.
 
@@ -273,6 +273,17 @@ class DerivativesDataSink(SimpleInterface):
     >>> res = dsink.run()
     >>> res.outputs.out_file  # doctest: +ELLIPSIS
     '.../niworkflows/sub-01/ses-retest/anat/sub-01_ses-retest_desc-denoised_T1w.nii.gz'
+
+    >>> dsink = DerivativesDataSink(base_directory=str(tmpdir), check_hdr=False,
+    ...                             allowed_entities=['from', 'to'], **{'from': 'orig'})
+    >>> dsink.inputs.in_file = str(tmpfile)
+    >>> dsink.inputs.to = 'native'
+    >>> dsink.inputs.source_file = bids_collect_data(
+    ...     str(datadir / 'ds114'), '01', bids_validate=False)[0]['t1w'][0]
+    >>> dsink.inputs.keep_dtype = True
+    >>> res = dsink.run()
+    >>> res.outputs.out_file  # doctest: +ELLIPSIS
+    '.../sub-01_ses-retest_from-orig_to-native_T1w.nii.gz'
 
     >>> bids_dir = tmpdir / 'bidsroot' / 'sub-02' / 'ses-noanat' / 'func'
     >>> bids_dir.mkdir(parents=True, exist_ok=True)
@@ -329,24 +340,65 @@ desc-preproc_bold.json'
     >>> lines[2]
     '  "SkullStripped": true'
 
+    >>> bids_dir = tmpdir / 'bidsroot' / 'sub-02' / 'ses-noanat' / 'func'
+    >>> bids_dir.mkdir(parents=True, exist_ok=True)
+    >>> tricky_source = bids_dir / 'sub-02_ses-noanat_task-rest_run-01_bold.nii.gz'
+    >>> tricky_source.open('w').close()
+    >>> dsink = DerivativesDataSink(base_directory=str(tmpdir), check_hdr=False,
+    ...                             SkullStripped=True)
+    >>> dsink.inputs.in_file = str(tmpfile)
+    >>> dsink.inputs.source_file = str(tricky_source)
+    >>> dsink.inputs.keep_dtype = True
+    >>> dsink.inputs.desc = 'preproc'
+    >>> dsink.inputs.RepetitionTime = 0.75
+    >>> dsink.inputs.meta_dict = {'RepetitionTime': 1.75, 'SkullStripped': False, 'Z': 'val'}
+    >>> res = dsink.run()
+    >>> res.outputs.out_meta  # doctest: +ELLIPSIS
+    '.../niworkflows/sub-02/ses-noanat/func/sub-02_ses-noanat_task-rest_run-01_\
+desc-preproc_bold.json'
+
+    >>> lines = Path(res.outputs.out_meta).read_text().splitlines()
+    >>> lines[1]
+    '  "RepetitionTime": 0.75,'
+
+    >>> lines[2]
+    '  "SkullStripped": true,'
+
+    >>> lines[3]
+    '  "Z": "val"'
+
     """
-    input_spec = DerivativesDataSinkInputSpec
-    output_spec = DerivativesDataSinkOutputSpec
+
+    input_spec = _DerivativesDataSinkInputSpec
+    output_spec = _DerivativesDataSinkOutputSpec
     out_path_base = "niworkflows"
     _always_run = True
 
-    def __init__(self, out_path_base=None, **inputs):
+    def __init__(self, allowed_entities=None, out_path_base=None, **inputs):
+        self._allowed_entities = allowed_entities or []
+
         self._metadata = {}
-        self._static_traits = self.input_spec.class_editable_traits()
+        self._static_traits = self.input_spec.class_editable_traits() + self._allowed_entities
         for dynamic_input in set(inputs) - set(self._static_traits):
             self._metadata[dynamic_input] = inputs.pop(dynamic_input)
 
         super(DerivativesDataSink, self).__init__(**inputs)
+        if self._allowed_entities:
+            add_traits(self.inputs, self._allowed_entities)
+            for k in set(self._allowed_entities).intersection(list(inputs.keys())):
+                setattr(self.inputs, k, inputs[k])
+
         self._results['out_file'] = []
         if out_path_base:
             self.out_path_base = out_path_base
 
     def _run_interface(self, runtime):
+        if isdefined(self.inputs.meta_dict):
+            meta = self.inputs.meta_dict
+            # inputs passed in construction take priority
+            meta.update(self._metadata)
+            self._metadata = meta
+
         src_fname, _ = _splitext(self.inputs.source_file)
         src_fname, dtype = src_fname.rsplit('_', 1)
         _, ext = _splitext(self.inputs.in_file[0])
@@ -374,9 +426,18 @@ desc-preproc_bold.json'
         out_path.mkdir(exist_ok=True, parents=True)
         base_fname = str(out_path / src_fname)
 
-        formatstr = '{bname}{space}{desc}{extra}{suffix}{dtype}{ext}'
+        allowed_entities = {}
+        for key in self._allowed_entities:
+            value = getattr(self.inputs, key)
+            if value is not None and isdefined(value):
+                allowed_entities[key] = '_%s-%s' % (key, value)
+
+        formatbase = '{bname}{space}{desc}' + ''.join(
+            [allowed_entities.get(s, '') for s in self._allowed_entities])
+
+        formatstr = formatbase + '{extra}{suffix}{dtype}{ext}'
         if len(self.inputs.in_file) > 1 and not isdefined(self.inputs.extra_values):
-            formatstr = '{bname}{space}{desc}{suffix}{i:04d}{dtype}{ext}'
+            formatstr = formatbase + '{suffix}{i:04d}{dtype}{ext}'
 
         space = '_space-{}'.format(self.inputs.space) if self.inputs.space else ''
         desc = '_desc-{}'.format(self.inputs.desc) if self.inputs.desc else ''
@@ -385,6 +446,7 @@ desc-preproc_bold.json'
 
         self._results['compression'] = []
         self._results['fixed_hdr'] = [False] * len(self.inputs.in_file)
+
         for i, fname in enumerate(self.inputs.in_file):
             extra = ''
             if isdefined(self.inputs.extra_values):
@@ -404,11 +466,13 @@ desc-preproc_bold.json'
 
             is_nii = out_file.endswith('.nii') or out_file.endswith('.nii.gz')
             if self.inputs.check_hdr and is_nii:
-                nii = nb.load(out_file)
+                # Do not use mmap; if we need to access the data at all, it will be to
+                # rewrite, risking a BusError
+                nii = nb.load(out_file, mmap=False)
                 if not isinstance(nii, (nb.Nifti1Image, nb.Nifti2Image)):
                     # .dtseries.nii are CIfTI2, therefore skip check
                     return runtime
-                hdr = nii.header.copy()
+                hdr = nii.header
                 curr_units = tuple([None if u == 'unknown' else u
                                     for u in hdr.get_xyzt_units()])
                 curr_codes = (int(hdr['qform_code']), int(hdr['sform_code']))
@@ -427,8 +491,7 @@ desc-preproc_bold.json'
                     hdr.set_xyzt_units(*units)
 
                     # Rewrite file with new header
-                    nii.__class__(nii.get_data(), nii.affine, hdr).to_filename(
-                        out_file)
+                    overwrite_header(nii, out_file)
 
         if len(self._results['out_file']) == 1:
             meta_fields = self.inputs.copyable_trait_names()
@@ -443,21 +506,17 @@ desc-preproc_bold.json'
         return runtime
 
 
-class ReadSidecarJSONInputSpec(BIDSBaseInputSpec):
+class _ReadSidecarJSONInputSpec(_BIDSBaseInputSpec):
     in_file = File(exists=True, mandatory=True, desc='the input nifti file')
-    fields = InputMultiObject(traits.Str,
-                              desc='map these fields to the output object')
-    undef_fields = traits.Bool(False, usedefault=True,
-                               desc='allow fields to be undefined')
 
 
-class ReadSidecarJSONOutputSpec(BIDSInfoOutputSpec):
+class _ReadSidecarJSONOutputSpec(_BIDSInfoOutputSpec):
     out_dict = traits.Dict()
 
 
 class ReadSidecarJSON(SimpleInterface):
     """
-    A utility to find and read JSON sidecar files of a BIDS tree
+    Read JSON sidecar files of a BIDS tree.
 
     >>> fmap = str(datadir / 'ds054' / 'sub-100185' / 'fmap' /
     ...            'sub-100185_phasediff.nii.gz')
@@ -494,10 +553,25 @@ class ReadSidecarJSON(SimpleInterface):
     <undefined>
 
     """
-    input_spec = ReadSidecarJSONInputSpec
-    output_spec = ReadSidecarJSONOutputSpec
+
+    input_spec = _ReadSidecarJSONInputSpec
+    output_spec = _ReadSidecarJSONOutputSpec
     layout = None
     _always_run = True
+
+    def __init__(self, fields=None, undef_fields=False, **inputs):
+        super(ReadSidecarJSON, self).__init__(**inputs)
+        self._fields = fields or []
+        if isinstance(self._fields, str):
+            self._fields = [self._fields]
+
+        self._undef_fields = undef_fields
+
+    def _outputs(self):
+        base = super(ReadSidecarJSON, self)._outputs()
+        if self._fields:
+            base = add_traits(base, self._fields)
+        return base
 
     def _run_interface(self, runtime):
         self.layout = self.inputs.bids_dir or self.layout
@@ -506,7 +580,7 @@ class ReadSidecarJSON(SimpleInterface):
                                    self.inputs.bids_validate)
 
         # Fill in BIDS entities of the output ("*_id")
-        output_keys = list(BIDSInfoOutputSpec().get().keys())
+        output_keys = list(_BIDSInfoOutputSpec().get().keys())
         params = self.layout.parse_file_entities(self.inputs.in_file)
         self._results = {key: params.get(key.split('_')[0], Undefined)
                          for key in output_keys}
@@ -516,49 +590,72 @@ class ReadSidecarJSON(SimpleInterface):
         self._results['out_dict'] = metadata
 
         # Set dynamic outputs if fields input is present
-        if isdefined(self.inputs.fields) and self.inputs.fields:
-            for fname in self.inputs.fields:
-                if not self.inputs.undef_fields and fname not in metadata:
-                    raise KeyError(
-                        'Metadata field "%s" not found for file %s' % (
-                            fname, self.inputs.in_file))
-                self._results[fname] = metadata.get(fname, Undefined)
+        for fname in self._fields:
+            if not self._undef_fields and fname not in metadata:
+                raise KeyError(
+                    'Metadata field "%s" not found for file %s' % (
+                        fname, self.inputs.in_file))
+            self._results[fname] = metadata.get(fname, Undefined)
         return runtime
 
 
-class BIDSFreeSurferDirInputSpec(BaseInterfaceInputSpec):
+class _BIDSFreeSurferDirInputSpec(BaseInterfaceInputSpec):
     derivatives = Directory(exists=True, mandatory=True,
                             desc='BIDS derivatives directory')
     freesurfer_home = Directory(exists=True, mandatory=True,
                                 desc='FreeSurfer installation directory')
-    subjects_dir = traits.Str('freesurfer', usedefault=True,
-                              desc='Name of FreeSurfer subjects directory')
+    subjects_dir = traits.Either(traits.Str(),
+                                 Directory(),
+                                 default='freesurfer',
+                                 usedefault=True,
+                                 desc='Name of FreeSurfer subjects directory')
     spaces = traits.List(traits.Str, desc='Set of output spaces to prepare')
     overwrite_fsaverage = traits.Bool(False, usedefault=True,
                                       desc='Overwrite fsaverage directories, if present')
 
 
-class BIDSFreeSurferDirOutputSpec(TraitedSpec):
+class _BIDSFreeSurferDirOutputSpec(TraitedSpec):
     subjects_dir = traits.Directory(exists=True,
                                     desc='FreeSurfer subjects directory')
 
 
 class BIDSFreeSurferDir(SimpleInterface):
-    """Create a FreeSurfer subjects directory in a BIDS derivatives directory
-    and copy fsaverage from the local FreeSurfer distribution.
-
-    Output subjects_dir = ``{derivatives}/{subjects_dir}``, and may be passed to
-    ReconAll and other FreeSurfer interfaces.
     """
-    input_spec = BIDSFreeSurferDirInputSpec
-    output_spec = BIDSFreeSurferDirOutputSpec
+    Prepare a FreeSurfer subjects directory for use in a BIDS context.
+
+    Constructs a subjects directory path, creating if necessary, and copies
+    fsaverage subjects (if necessary or forced via ``overwrite_fsaverage``)
+    into from the local FreeSurfer distribution.
+
+    If ``subjects_dir`` is an absolute path, then it is returned as the output
+    ``subjects_dir``.
+    If it is a relative path, it will be resolved relative to the
+    ```derivatives`` directory.`
+
+    Regardless of the path, if ``fsaverage`` spaces are provided, they will be
+    verified to exist, or copied from ``$FREESURFER_HOME/subjects``, if missing.
+
+    The output ``subjects_dir`` is intended to be passed to ``ReconAll`` and
+    other FreeSurfer interfaces.
+
+    """
+
+    input_spec = _BIDSFreeSurferDirInputSpec
+    output_spec = _BIDSFreeSurferDirOutputSpec
     _always_run = True
 
     def _run_interface(self, runtime):
-        subjects_dir = os.path.join(self.inputs.derivatives,
-                                    self.inputs.subjects_dir)
-        os.makedirs(subjects_dir, exist_ok=True)
-        self._results['subjects_dir'] = subjects_dir
+        subjects_dir = Path(self.inputs.subjects_dir)
+        if not subjects_dir.is_absolute():
+            subjects_dir = Path(self.inputs.derivatives) / subjects_dir
+        subjects_dir.mkdir(parents=True, exist_ok=True)
+        self._results['subjects_dir'] = str(subjects_dir)
+
+        orig_subjects_dir = Path(self.inputs.freesurfer_home) / 'subjects'
+
+        # Source is target, so just quit
+        if subjects_dir == orig_subjects_dir:
+            return runtime
 
         spaces = list(self.inputs.spaces)
         # Always copy fsaverage, for proper recon-all functionality
@@ -569,12 +666,20 @@ class BIDSFreeSurferDir(SimpleInterface):
             # Skip non-freesurfer spaces and fsnative
             if not space.startswith('fsaverage'):
                 continue
-            source = os.path.join(self.inputs.freesurfer_home, 'subjects', space)
-            dest = os.path.join(subjects_dir, space)
+            source = orig_subjects_dir / space
+            dest = subjects_dir / space
+
+            # Edge case, but give a sensible error
+            if not source.exists():
+                if dest.exists():
+                    continue
+                else:
+                    raise FileNotFoundError("Expected to find '%s' to copy" % source)
+
             # Finesse is overrated. Either leave it alone or completely clobber it.
-            if os.path.exists(dest) and self.inputs.overwrite_fsaverage:
+            if dest.exists() and self.inputs.overwrite_fsaverage:
                 rmtree(dest)
-            if not os.path.exists(dest):
+            if not dest.exists():
                 try:
                     copytree(source, dest)
                 except FileExistsError:

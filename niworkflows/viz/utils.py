@@ -11,7 +11,7 @@ import base64
 import re
 from sys import version_info
 from uuid import uuid4
-from io import open, StringIO
+from io import StringIO
 
 import numpy as np
 import nibabel as nb
@@ -200,7 +200,7 @@ def cuts_from_bbox(mask_nii, cuts=3):
     """Finds equi-spaced cuts for presenting images"""
     from nibabel.affines import apply_affine
 
-    mask_data = mask_nii.get_data() > 0.0
+    mask_data = np.asanyarray(mask_nii.dataobj) > 0.0
 
     # First, project the number of masked voxels on each axes
     ijk_counts = [
@@ -262,7 +262,7 @@ def _3d_in_file(in_file):
     except AttributeError:
         in_file = in_file
 
-    if in_file.get_data().ndim == 3:
+    if len(in_file.shape) == 3:
         return in_file
 
     return nlimage.index_img(in_file, 0)
@@ -278,7 +278,7 @@ def plot_segs(image_nii, seg_niis, out_file, bbox_nii=None, masked=False,
     plot_params = {} if plot_params is None else plot_params
 
     image_nii = _3d_in_file(image_nii)
-    data = image_nii.get_data()
+    data = image_nii.get_fdata()
 
     plot_params = robust_set_limits(data, plot_params)
 
@@ -363,15 +363,15 @@ def plot_registration(anat_nii, div_id, plot_params=None,
 
     out_files = []
     if estimate_brightness:
-        plot_params = robust_set_limits(anat_nii.get_data().reshape(-1),
+        plot_params = robust_set_limits(anat_nii.get_fdata().reshape(-1),
                                         plot_params)
 
     # FreeSurfer ribbon.mgz
     ribbon = contour is not None and np.array_equal(
-        np.unique(contour.get_data()), [0, 2, 3, 41, 42])
+        np.unique(contour.get_fdata()), [0, 2, 3, 41, 42])
 
     if ribbon:
-        contour_data = contour.get_data() % 39
+        contour_data = contour.get_fdata() % 39
         white = nlimage.new_img_like(contour, contour_data == 2)
         pial = nlimage.new_img_like(contour, contour_data >= 2)
 
@@ -519,6 +519,39 @@ def plot_melodic_components(melodic_dir, in_file, tr=None,
                             out_file='melodic_reportlet.svg',
                             compress='auto', report_mask=None,
                             noise_components_file=None):
+    """
+    Plots the spatiotemporal components extracted by FSL MELODIC
+    from functional MRI data.
+
+    Parameters
+
+        melodic_dir : str
+            Path pointing to the outputs of MELODIC
+        in_file :  str
+            Path pointing to the reference fMRI dataset. This file
+            will be used to extract the TR value, if the ``tr`` argument
+            is not set. This file will be used to calculate a mask
+            if ``report_mask`` is not provided.
+        tr : float
+            Repetition time in seconds
+        out_file : str
+            Path where the resulting SVG file will be stored
+        compress : ``'auto'`` or bool
+            Whether SVG should be compressed. If ``'auto'``, compression
+            will be executed if dependencies are installed (SVGO)
+        report_mask : str
+            Path to a brain mask corresponding to ``in_file``
+        noise_components_file : str
+            A CSV file listing the indexes of components classified as noise
+            by some manual or automated (e.g. ICA-AROMA) procedure. If a
+            ``noise_components_file`` is provided, then components will be
+            plotted with red/green colors (correspondingly to whether they
+            are in the file -noise components, red-, or not -signal, green-).
+            When all or none of the components are in the file, a warning
+            is printed at the top.
+
+
+    """
     from nilearn.image import index_img, iter_img
     import nibabel as nb
     import numpy as np
@@ -526,8 +559,6 @@ def plot_melodic_components(melodic_dir, in_file, tr=None,
     import seaborn as sns
     from matplotlib.gridspec import GridSpec
     import os
-    import re
-    from io import StringIO
     sns.set_style("white")
     current_palette = sns.color_palette()
     in_nii = nb.load(in_file)
@@ -558,7 +589,7 @@ def plot_melodic_components(melodic_dir, in_file, tr=None,
 
     mask_sl = []
     for j in range(3):
-        mask_sl.append(transform_to_2d(mask_img.get_data(), j))
+        mask_sl.append(transform_to_2d(mask_img.get_fdata(), j))
 
     timeseries = np.loadtxt(os.path.join(melodic_dir, "melodic_mix"))
     power = np.loadtxt(os.path.join(melodic_dir, "melodic_FTmix"))
@@ -568,15 +599,24 @@ def plot_melodic_components(melodic_dir, in_file, tr=None,
     Ny = Fs / 2
     f = Ny * (np.array(list(range(1, power.shape[0] + 1)))) / (power.shape[0])
 
-    noise_components = None
+    # Set default colors
+    color_title = 'k'
+    color_time = current_palette[0]
+    color_power = current_palette[1]
+    classified_colors = None
+
+    warning_row = 0  # Do not allocate warning row
+    # Only if the components file has been provided, a warning banner will
+    # be issued if all or none of the components were classified as noise
     if noise_components_file:
         noise_components = np.loadtxt(noise_components_file,
                                       dtype=int, delimiter=',', ndmin=1)
+        # Activate warning row if pertinent
+        warning_row = int(noise_components.size == 0 or
+                          noise_components.size == n_components)
+        classified_colors = {True: 'r', False: 'g'}
 
     n_rows = int((n_components + (n_components % 2)) / 2)
-    warning_row = int(noise_components is None or
-                      noise_components.size == 0 or
-                      noise_components.size == n_components)
     fig = plt.figure(figsize=(6.5 * 1.5, (n_rows + warning_row) * 0.85))
     gs = GridSpec(n_rows * 2 + warning_row, 9,
                   width_ratios=[1, 1, 1, 4, 0.001, 1, 1, 1, 4, ],
@@ -585,7 +625,7 @@ def plot_melodic_components(melodic_dir, in_file, tr=None,
     if warning_row:
         ax = fig.add_subplot(gs[0, :])
         ncomps = 'NONE of the'
-        if noise_components is not None and noise_components.size == n_components:
+        if noise_components.size == n_components:
             ncomps = 'ALL'
         ax.annotate(
             'WARNING: {} components were classified as noise'.format(ncomps),
@@ -598,24 +638,21 @@ def plot_melodic_components(melodic_dir, in_file, tr=None,
         ax.axes.get_xaxis().set_visible(False)
         ax.axes.get_yaxis().set_visible(False)
 
+    titlefmt = "C{id:d}{noise}: Tot. var. expl. {var:.2g}%".format
     for i, img in enumerate(
             iter_img(os.path.join(melodic_dir, "melodic_IC.nii.gz"))):
 
         col = i % 2
-        row = int(i / 2)
+        row = i // 2
         l_row = row * 2 + warning_row
+        is_noise = False
 
-        # Set default colors
-        color_title = 'k'
-        color_time = current_palette[0]
-        color_power = current_palette[1]
-
-        if noise_components is not None and noise_components.size > 0:
+        if classified_colors:
             # If a noise components list is provided, assign red/green
-            color_title = color_time = color_power = (
-                'r' if (i + 1) in noise_components else 'g')
+            is_noise = (i + 1) in noise_components
+            color_title = color_time = color_power = classified_colors[is_noise]
 
-        data = img.get_data()
+        data = img.get_fdata()
         for j in range(3):
             ax1 = fig.add_subplot(gs[l_row:l_row + 2, j + col * 5])
             sl = transform_to_2d(data, j)
@@ -627,8 +664,10 @@ def plot_melodic_components(melodic_dir, in_file, tr=None,
             ax1.autoscale_view('tight')
             if j == 0:
                 ax1.set_title(
-                    "C%d: Tot. var. expl. %.2g%%" % (i + 1, stats[i, 1]), x=0,
-                    y=1.18, fontsize=7,
+                    titlefmt(id=i + 1,
+                             noise=' [noise]' * is_noise,
+                             var=stats[i, 1]),
+                    x=0, y=1.18, fontsize=7,
                     horizontalalignment='left',
                     verticalalignment='top',
                     color=color_title)
@@ -660,20 +699,6 @@ def plot_melodic_components(melodic_dir, in_file, tr=None,
         sns.despine(left=True, bottom=True)
 
     plt.subplots_adjust(hspace=0.5)
-
-    image_buf = StringIO()
-    fig.savefig(image_buf, dpi=300, format='svg', transparent=True,
+    fig.savefig(out_file, dpi=300, format='svg', transparent=True,
                 bbox_inches='tight', pad_inches=0.01)
     fig.clf()
-    image_svg = image_buf.getvalue()
-
-    if compress is True or compress == 'auto':
-        image_svg = svg_compress(image_svg, compress)
-    image_svg = re.sub(' height="[0-9]+[a-z]*"', '', image_svg, count=1)
-    image_svg = re.sub(' width="[0-9]+[a-z]*"', '', image_svg, count=1)
-    image_svg = re.sub(' viewBox',
-                       ' preseveAspectRation="xMidYMid meet" viewBox',
-                       image_svg, count=1)
-
-    with open(out_file, 'w' if PY3 else 'wb') as f:
-        f.write(image_svg)

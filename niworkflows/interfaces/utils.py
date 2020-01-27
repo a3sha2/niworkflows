@@ -1,12 +1,6 @@
-# -*- coding: utf-8 -*-
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
-"""
-Utilities
-
-"""
-from __future__ import absolute_import, division, print_function, unicode_literals
-
+"""Utilities."""
 import os
 import re
 import json
@@ -21,9 +15,11 @@ import scipy.ndimage as nd
 from nipype import logging
 from nipype.utils.filemanip import fname_presuffix
 from nipype.utils.misc import normalize_mc_params
+from nipype.interfaces.io import add_traits
 from nipype.interfaces.base import (
     traits, isdefined, File, InputMultiPath,
-    TraitedSpec, BaseInterfaceInputSpec, SimpleInterface
+    TraitedSpec, BaseInterfaceInputSpec, SimpleInterface,
+    DynamicTraitedSpec
 )
 from .. import __version__
 
@@ -31,40 +27,71 @@ from .. import __version__
 LOG = logging.getLogger('nipype.interface')
 
 
-class CopyXFormInputSpec(BaseInterfaceInputSpec):
-    in_file = File(exists=True, mandatory=True, desc='the file we get the data from')
+class _CopyXFormInputSpec(DynamicTraitedSpec, BaseInterfaceInputSpec):
     hdr_file = File(exists=True, mandatory=True, desc='the file we get the header from')
-
-
-class CopyXFormOutputSpec(TraitedSpec):
-    out_file = File(exists=True, desc='written file path')
 
 
 class CopyXForm(SimpleInterface):
     """
     Copy the x-form matrices from `hdr_file` to `out_file`.
     """
-    input_spec = CopyXFormInputSpec
-    output_spec = CopyXFormOutputSpec
+    input_spec = _CopyXFormInputSpec
+    output_spec = DynamicTraitedSpec
+
+    def __init__(self, fields=None, **inputs):
+        self._fields = fields or ['in_file']
+        if isinstance(self._fields, str):
+            self._fields = [self._fields]
+
+        super(CopyXForm, self).__init__(**inputs)
+
+        add_traits(self.inputs, self._fields)
+        for f in set(self._fields).intersection(list(inputs.keys())):
+            setattr(self.inputs, f, inputs[f])
+
+    def _outputs(self):
+        base = super(CopyXForm, self)._outputs()
+        if self._fields:
+            fields = self._fields.copy()
+            if 'in_file' in fields:
+                idx = fields.index('in_file')
+                fields.pop(idx)
+                fields.insert(idx, 'out_file')
+
+            base = add_traits(base, fields)
+        return base
 
     def _run_interface(self, runtime):
-        out_name = fname_presuffix(self.inputs.in_file,
-                                   suffix='_xform',
-                                   newpath=runtime.cwd)
-        # Copy and replace header
-        shutil.copy(self.inputs.in_file, out_name)
-        _copyxform(self.inputs.hdr_file, out_name,
-                   message='CopyXForm (niworkflows v%s)' % __version__)
-        self._results['out_file'] = out_name
+        for f in self._fields:
+            in_files = getattr(self.inputs, f)
+            self._results[f] = []
+            if isinstance(in_files, str):
+                in_files = [in_files]
+            for in_file in in_files:
+                out_name = fname_presuffix(
+                    in_file, suffix='_xform', newpath=runtime.cwd)
+                # Copy and replace header
+                shutil.copy(in_file, out_name)
+                _copyxform(self.inputs.hdr_file, out_name,
+                           message='CopyXForm (niworkflows v%s)' % __version__)
+                self._results[f].append(out_name)
+
+            # Flatten out one-element lists
+            if len(self._results[f]) == 1:
+                self._results[f] = self._results[f][0]
+
+        default = self._results.pop('in_file', None)
+        if default:
+            self._results['out_file'] = default
         return runtime
 
 
-class CopyHeaderInputSpec(BaseInterfaceInputSpec):
+class _CopyHeaderInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True, desc='the file we get the data from')
     hdr_file = File(exists=True, mandatory=True, desc='the file we get the header from')
 
 
-class CopyHeaderOutputSpec(TraitedSpec):
+class _CopyHeaderOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='written file path')
 
 
@@ -73,13 +100,13 @@ class CopyHeader(SimpleInterface):
     Copy a header from the `hdr_file` to `out_file` with data drawn from
     `in_file`.
     """
-    input_spec = CopyHeaderInputSpec
-    output_spec = CopyHeaderOutputSpec
+    input_spec = _CopyHeaderInputSpec
+    output_spec = _CopyHeaderOutputSpec
 
     def _run_interface(self, runtime):
         in_img = nb.load(self.inputs.hdr_file)
         out_img = nb.load(self.inputs.in_file)
-        new_img = out_img.__class__(out_img.get_data(), in_img.affine, in_img.header)
+        new_img = out_img.__class__(out_img.dataobj, in_img.affine, in_img.header)
         new_img.set_data_dtype(out_img.get_data_dtype())
 
         out_name = fname_presuffix(self.inputs.in_file,
@@ -89,13 +116,13 @@ class CopyHeader(SimpleInterface):
         return runtime
 
 
-class NormalizeMotionParamsInputSpec(BaseInterfaceInputSpec):
+class _NormalizeMotionParamsInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True, desc='the input parameters file')
     format = traits.Enum('FSL', 'AFNI', 'FSFAST', 'NIPY', usedefault=True,
                          desc='output format')
 
 
-class NormalizeMotionParamsOutputSpec(TraitedSpec):
+class _NormalizeMotionParamsOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='written file path')
 
 
@@ -104,8 +131,8 @@ class NormalizeMotionParams(SimpleInterface):
     Convert input motion parameters into the designated convention.
 
     """
-    input_spec = NormalizeMotionParamsInputSpec
-    output_spec = NormalizeMotionParamsOutputSpec
+    input_spec = _NormalizeMotionParamsInputSpec
+    output_spec = _NormalizeMotionParamsOutputSpec
 
     def _run_interface(self, runtime):
         mpars = np.loadtxt(self.inputs.in_file)  # mpars is N_t x 6
@@ -118,7 +145,7 @@ class NormalizeMotionParams(SimpleInterface):
         return runtime
 
 
-class GenerateSamplingReferenceInputSpec(BaseInterfaceInputSpec):
+class _GenerateSamplingReferenceInputSpec(BaseInterfaceInputSpec):
     fixed_image = File(exists=True, mandatory=True,
                        desc='the reference file, defines the FoV')
     moving_image = File(exists=True, mandatory=True, desc='the pixel size reference')
@@ -126,9 +153,13 @@ class GenerateSamplingReferenceInputSpec(BaseInterfaceInputSpec):
                              desc='force xform code')
     fov_mask = traits.Either(None, File(exists=True), usedefault=True,
                              desc='mask to clip field of view (in fixed_image space)')
+    keep_native = traits.Bool(True, usedefault=True,
+                              desc='calculate a grid with native resolution covering '
+                                   'the volume extent given by fixed_image, fast forward '
+                                   'fixed_image otherwise.')
 
 
-class GenerateSamplingReferenceOutputSpec(TraitedSpec):
+class _GenerateSamplingReferenceOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='one file with all inputs flattened')
 
 
@@ -147,10 +178,13 @@ class GenerateSamplingReference(SimpleInterface):
 
     """
 
-    input_spec = GenerateSamplingReferenceInputSpec
-    output_spec = GenerateSamplingReferenceOutputSpec
+    input_spec = _GenerateSamplingReferenceInputSpec
+    output_spec = _GenerateSamplingReferenceOutputSpec
 
     def _run_interface(self, runtime):
+        if not self.inputs.keep_native:
+            self._results['out_file'] = self.inputs.fixed_image
+            return runtime
         self._results['out_file'] = _gen_reference(
             self.inputs.fixed_image,
             self.inputs.moving_image,
@@ -181,7 +215,7 @@ def _copyxform(ref_image, out_image, message=None):
     header.set_sform(sform, int(sform_code))
     header['descrip'] = 'xform matrices modified by %s.' % (message or '(unknown)')
 
-    newimg = resampled.__class__(resampled.get_data(), orig.affine, header)
+    newimg = resampled.__class__(resampled.dataobj, orig.affine, header)
     newimg.to_filename(out_image)
 
 
@@ -232,7 +266,7 @@ def _gen_reference(fixed_image, moving_image, fov_mask=None, out_file=None,
 
         # Calculate a bounding box for the input mask
         # with an offset of 2 voxels per face
-        bbox = np.argwhere(masknii.get_data() > 0)
+        bbox = np.argwhere(np.asanyarray(masknii.dataobj) > 0)
         new_origin = np.clip(bbox.min(0) - 2, a_min=0, a_max=None)
         new_end = np.clip(bbox.max(0) + 2, a_min=0,
                           a_max=res_shape - 1)
@@ -269,14 +303,14 @@ def _gen_reference(fixed_image, moving_image, fov_mask=None, out_file=None,
     return out_file
 
 
-class SanitizeImageInputSpec(BaseInterfaceInputSpec):
+class _SanitizeImageInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True, desc='input image')
     n_volumes_to_discard = traits.Int(0, usedefault=True, desc='discard n first volumes')
     max_32bit = traits.Bool(False, usedefault=True, desc='cast data to float32 if higher '
                                                          'precision is encountered')
 
 
-class SanitizeImageOutputSpec(TraitedSpec):
+class _SanitizeImageOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='validated image')
     out_report = File(exists=True, desc='HTML segment containing warning')
 
@@ -319,8 +353,8 @@ class SanitizeImage(SimpleInterface):
     +-------------------+------------------+------------------+------------------\
 +------------------------------------------------+
     """
-    input_spec = SanitizeImageInputSpec
-    output_spec = SanitizeImageOutputSpec
+    input_spec = _SanitizeImageInputSpec
+    output_spec = _SanitizeImageOutputSpec
 
     def _run_interface(self, runtime):
         img = nb.load(self.inputs.in_file)
@@ -425,7 +459,7 @@ class SanitizeImage(SimpleInterface):
         return runtime
 
 
-class TPM2ROIInputSpec(BaseInterfaceInputSpec):
+class _TPM2ROIInputSpec(BaseInterfaceInputSpec):
     in_tpm = File(exists=True, mandatory=True, desc='Tissue probability map file in T1 space')
     in_mask = File(exists=True, mandatory=True, desc='Binary mask of skull-stripped T1w image')
     mask_erode_mm = traits.Float(xor=['mask_erode_prop'],
@@ -440,7 +474,7 @@ class TPM2ROIInputSpec(BaseInterfaceInputSpec):
                                desc='threshold for the tissue probability maps')
 
 
-class TPM2ROIOutputSpec(TraitedSpec):
+class _TPM2ROIOutputSpec(TraitedSpec):
     roi_file = File(exists=True, desc='output ROI file')
     eroded_mask = File(exists=True, desc='resulting eroded mask')
 
@@ -456,8 +490,8 @@ class TPM2ROI(SimpleInterface):
 
     """
 
-    input_spec = TPM2ROIInputSpec
-    output_spec = TPM2ROIOutputSpec
+    input_spec = _TPM2ROIInputSpec
+    output_spec = _TPM2ROIOutputSpec
 
     def _run_interface(self, runtime):
         mask_erode_mm = self.inputs.mask_erode_mm
@@ -487,19 +521,19 @@ class TPM2ROI(SimpleInterface):
         return runtime
 
 
-class AddTPMsInputSpec(BaseInterfaceInputSpec):
+class _AddTPMsInputSpec(BaseInterfaceInputSpec):
     in_files = InputMultiPath(File(exists=True), mandatory=True, desc='input list of ROIs')
     indices = traits.List(traits.Int, desc='select specific maps')
 
 
-class AddTPMsOutputSpec(TraitedSpec):
+class _AddTPMsOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='union of binarized input files')
 
 
 class AddTPMs(SimpleInterface):
     """Calculate the union of several :abbr:`TPMs (tissue-probability map)`"""
-    input_spec = AddTPMsInputSpec
-    output_spec = AddTPMsOutputSpec
+    input_spec = _AddTPMsInputSpec
+    output_spec = _AddTPMsOutputSpec
 
     def _run_interface(self, runtime):
         in_files = self.inputs.in_files
@@ -518,7 +552,7 @@ class AddTPMs(SimpleInterface):
             return runtime
 
         im = nb.concat_images([in_files[i] for i in indices])
-        data = im.get_data().astype(float).sum(axis=3)
+        data = im.get_fdata().sum(axis=3)
         data = np.clip(data, a_min=0.0, a_max=1.0)
 
         out_file = fname_presuffix(first_fname, suffix='_tpmsum',
@@ -535,12 +569,12 @@ class AddTPMs(SimpleInterface):
         return runtime
 
 
-class AddTSVHeaderInputSpec(BaseInterfaceInputSpec):
+class _AddTSVHeaderInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True, desc='input file')
     columns = traits.List(traits.Str, mandatory=True, desc='header for columns')
 
 
-class AddTSVHeaderOutputSpec(TraitedSpec):
+class _AddTSVHeaderOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='output average file')
 
 
@@ -549,10 +583,8 @@ class AddTSVHeader(SimpleInterface):
 
     .. testsetup::
 
-    >>> import pandas as pd
-    >>> from tempfile import TemporaryDirectory
-    >>> tmpdir = TemporaryDirectory()
-    >>> os.chdir(tmpdir.name)
+    >>> cwd = os.getcwd()
+    >>> os.chdir(tmpdir)
 
     .. doctest::
 
@@ -576,11 +608,11 @@ class AddTSVHeader(SimpleInterface):
 
     .. testcleanup::
 
-    >>> tmpdir.cleanup()
+    >>> os.chdir(cwd)
 
     """
-    input_spec = AddTSVHeaderInputSpec
-    output_spec = AddTSVHeaderOutputSpec
+    input_spec = _AddTSVHeaderInputSpec
+    output_spec = _AddTSVHeaderOutputSpec
 
     def _run_interface(self, runtime):
         out_file = fname_presuffix(self.inputs.in_file, suffix='_motion.tsv', newpath=runtime.cwd,
@@ -593,14 +625,14 @@ class AddTSVHeader(SimpleInterface):
         return runtime
 
 
-class JoinTSVColumnsInputSpec(BaseInterfaceInputSpec):
+class _JoinTSVColumnsInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True, desc='input file')
     join_file = File(exists=True, mandatory=True, desc='file to be adjoined')
     side = traits.Enum('right', 'left', usedefault=True, desc='where to join')
     columns = traits.List(traits.Str, desc='header for columns')
 
 
-class JoinTSVColumnsOutputSpec(TraitedSpec):
+class _JoinTSVColumnsOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='output TSV file')
 
 
@@ -609,12 +641,8 @@ class JoinTSVColumns(SimpleInterface):
 
     .. testsetup::
 
-    >>> import os
-    >>> import pandas as pd
-    >>> import numpy as np
-    >>> from tempfile import TemporaryDirectory
-    >>> tmpdir = TemporaryDirectory()
-    >>> os.chdir(tmpdir.name)
+    >>> cwd = os.getcwd()
+    >>> os.chdir(tmpdir)
 
     .. doctest::
 
@@ -672,11 +700,11 @@ class JoinTSVColumns(SimpleInterface):
 
     .. testcleanup::
 
-    >>> tmpdir.cleanup()
+    >>> os.chdir(cwd)
 
     """
-    input_spec = JoinTSVColumnsInputSpec
-    output_spec = JoinTSVColumnsOutputSpec
+    input_spec = _JoinTSVColumnsInputSpec
+    output_spec = _JoinTSVColumnsOutputSpec
 
     def _run_interface(self, runtime):
         out_file = fname_presuffix(
@@ -710,15 +738,44 @@ class JoinTSVColumns(SimpleInterface):
         return runtime
 
 
-class TSV2JSONInputSpec(BaseInterfaceInputSpec):
+class _DictMergeInputSpec(BaseInterfaceInputSpec):
+    in_dicts = traits.List(
+        traits.Either(traits.Dict, traits.Instance(OrderedDict)),
+        desc='Dictionaries to be merged. In the event of a collision, values '
+             'from dictionaries later in the list receive precedence.')
+
+
+class _DictMergeOutputSpec(TraitedSpec):
+    out_dict = traits.Dict(desc='Merged dictionary')
+
+
+class DictMerge(SimpleInterface):
+    """Merge (ordered) dictionaries."""
+    input_spec = _DictMergeInputSpec
+    output_spec = _DictMergeOutputSpec
+
+    def _run_interface(self, runtime):
+        out_dict = {}
+        for in_dict in self.inputs.in_dicts:
+            out_dict.update(in_dict)
+        self._results['out_dict'] = out_dict
+        return runtime
+
+
+class _TSV2JSONInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True, desc='Input TSV file')
     index_column = traits.Str(mandatory=True,
                               desc='Name of the column in the TSV to be used '
                                    'as the top-level key in the JSON. All '
                                    'remaining columns will be assigned as '
                                    'nested keys.')
-    out_file = File(desc='Path where the output file is to be saved')
-    additional_metadata = traits.Either(None, traits.Dict(), usedefault=True,
+    output = traits.Either(None, File,
+                           desc='Path where the output file is to be saved. '
+                                'If this is `None`, then a JSON-compatible '
+                                'dictionary is returned instead.')
+    additional_metadata = traits.Either(None, traits.Dict,
+                                        traits.Instance(OrderedDict),
+                                        usedefault=True,
                                         desc='Any additional metadata that '
                                              'should be applied to all '
                                              'entries in the JSON.')
@@ -730,27 +787,29 @@ class TSV2JSONInputSpec(BaseInterfaceInputSpec):
                                     'and camel case for nested keys')
 
 
-class TSV2JSONOutputSpec(TraitedSpec):
-    out_file = File(exists=True, desc='Output JSON file')
+class _TSV2JSONOutputSpec(TraitedSpec):
+    output = traits.Either(traits.Dict, File(exists=True),
+                           traits.Instance(OrderedDict),
+                           desc='Output dictionary or JSON file')
 
 
 class TSV2JSON(SimpleInterface):
     """Convert metadata from TSV format to JSON format.
     """
-    input_spec = TSV2JSONInputSpec
-    output_spec = TSV2JSONOutputSpec
+    input_spec = _TSV2JSONInputSpec
+    output_spec = _TSV2JSONOutputSpec
 
     def _run_interface(self, runtime):
-        if not isdefined(self.inputs.out_file):
-            out_file = fname_presuffix(
+        if not isdefined(self.inputs.output):
+            output = fname_presuffix(
                 self.inputs.in_file, suffix='.json', newpath=runtime.cwd,
                 use_ext=False)
         else:
-            out_file = self.inputs.out_file
+            output = self.inputs.output
 
-        self._results['out_file'] = _tsv2json(
+        self._results['output'] = _tsv2json(
             in_tsv=self.inputs.in_file,
-            out_json=out_file,
+            out_json=output,
             index_column=self.inputs.index_column,
             additional_metadata=self.inputs.additional_metadata,
             drop_columns=self.inputs.drop_columns,
@@ -770,7 +829,7 @@ def _tsv2json(in_tsv, out_json, index_column, additional_metadata=None,
         Path to the metadata in TSV format.
     out_json: str
         Path where the metadata should be saved in JSON format after
-        conversion.
+        conversion. If this is None, then a dictionary is returned instead.
     index_column: str
         Name of the column in the TSV to be used as an index (top-level key in
         the JSON).
@@ -790,7 +849,7 @@ def _tsv2json(in_tsv, out_json, index_column, additional_metadata=None,
         Path to the metadata saved in JSON format.
     """
     import pandas as pd
-    # Taken from https://dev.to/rrampage/snake-case-to-camel-case-and- ...
+    # Adapted from https://dev.to/rrampage/snake-case-to-camel-case-and- ...
     # back-using-regular-expressions-and-python-m9j
     re_to_camel = r'(.*?)_([a-zA-Z0-9])'
     re_to_snake = r'(^.+?|.*?)((?<![_A-Z])[A-Z]|(?<![_0-9])[0-9]+)'
@@ -811,7 +870,7 @@ def _tsv2json(in_tsv, out_json, index_column, additional_metadata=None,
     additional_metadata = additional_metadata or {}
     tsv_data = pd.read_csv(in_tsv, '\t')
     for k, v in additional_metadata.items():
-        tsv_data[k] = v
+        tsv_data[k] = [v] * len(tsv_data.index)
     for col in drop_columns:
         tsv_data.drop(labels=col, axis='columns', inplace=True)
     tsv_data.set_index(index_column, drop=True, inplace=True)
@@ -825,6 +884,11 @@ def _tsv2json(in_tsv, out_json, index_column, additional_metadata=None,
     json_data = tsv_data.to_json(orient='index')
     json_data = json.JSONDecoder(
         object_pairs_hook=OrderedDict).decode(json_data)
+    for i in json_data:
+        json_data[i].update(additional_metadata)
+
+    if out_json is None:
+        return json_data
 
     with open(out_json, 'w') as f:
         json.dump(json_data, f, indent=4)
@@ -838,7 +902,7 @@ def _tpm2roi(in_tpm, in_mask, mask_erosion_mm=None, erosion_mm=None,
     Generate a mask from a tissue probability map
     """
     tpm_img = nb.load(in_tpm)
-    roi_mask = (tpm_img.get_data() >= pthres).astype(np.uint8)
+    roi_mask = (tpm_img.get_fdata() >= pthres).astype(np.uint8)
 
     eroded_mask_file = None
     erode_in = (mask_erosion_mm is not None and mask_erosion_mm > 0 or
@@ -847,7 +911,7 @@ def _tpm2roi(in_tpm, in_mask, mask_erosion_mm=None, erosion_mm=None,
         eroded_mask_file = fname_presuffix(in_mask, suffix='_eroded',
                                            newpath=newpath)
         mask_img = nb.load(in_mask)
-        mask_data = mask_img.get_data().astype(np.uint8)
+        mask_data = np.asanyarray(mask_img.dataobj).astype(np.uint8)
         if mask_erosion_mm:
             iter_n = max(int(mask_erosion_mm / max(mask_img.header.get_zooms())), 1)
             mask_data = nd.binary_erosion(mask_data, iterations=iter_n)

@@ -37,13 +37,13 @@ class fMRIPlot(object):
         func_nii = nb.load(func_file)
         self.tr = tr if tr is not None else func_nii.header.get_zooms()[-1]
 
-        self.mask_data = np.ones_like(func_nii.get_data(), dtype='uint8')
+        self.mask_data = nb.fileslice.strided_scalar(func_nii.shape[:3], np.uint8(1))
         if mask_file:
-            self.mask_data = nb.load(mask_file).get_data().astype('uint8')
+            self.mask_data = np.asanyarray(nb.load(mask_file).dataobj).astype('uint8')
 
         self.seg_data = None
         if seg_file:
-            self.seg_data = nb.load(seg_file).get_data()
+            self.seg_data = np.asanyarray(nb.load(seg_file).dataobj)
 
         if units is None:
             units = {}
@@ -587,7 +587,7 @@ def compcor_variance_plot(metadata_files, metadata_sources=None,
             metadata_sources = ['Decomposition {:d}'.format(i)
                                 for i in range(len(metadata_files))]
     for file, source in zip(metadata_files, metadata_sources):
-        metadata[source] = pd.read_table(str(file))
+        metadata[source] = pd.read_csv(str(file), sep=r'\s+')
         metadata[source]['source'] = source
     metadata = pd.concat(list(metadata.values()))
     bbox_txt = {
@@ -599,31 +599,36 @@ def compcor_variance_plot(metadata_files, metadata_sources=None,
         'alpha': 0.8
     }
 
-    decompositions = list(metadata.groupby(['source', 'mask']).groups.keys())
+    decompositions = []
+    data_sources = list(metadata.groupby(['source', 'mask']).groups.keys())
+    for source, mask in data_sources:
+        if not np.isnan(
+                metadata.loc[
+                    (metadata['source'] == source) & (metadata['mask'] == mask)
+                ]['singular_value'].values[0]):
+            decompositions.append((source, mask))
 
     if fig is not None:
-        ax = [fig.add_subplot(1, len(decompositions), i+1)
+        ax = [fig.add_subplot(1, len(decompositions), i + 1)
               for i in range(len(decompositions))]
     elif len(decompositions) > 1:
         fig, ax = plt.subplots(1, len(decompositions),
-                               figsize=(5*len(decompositions), 5))
+                               figsize=(5 * len(decompositions), 5))
     else:
         ax = [plt.axes()]
 
     for m, (source, mask) in enumerate(decompositions):
-        components = metadata[(metadata['mask'] == mask)
-                              & (metadata['source'] == source)]
+        components = metadata[(metadata['mask'] == mask) & (metadata['source'] == source)]
         if len([m for s, m in decompositions if s == source]) > 1:
             title_mask = ' ({} mask)'.format(mask)
         else:
             title_mask = ''
         fig_title = '{}{}'.format(source, title_mask)
 
-        ax[m].plot(np.arange(components.shape[0]+1),
-                   [0] + list(
-                       100*components['cumulative_variance_explained']),
-                   color='purple',
-                   linewidth=2.5)
+        ax[m].plot(np.arange(components.shape[0] + 1), [0] + list(
+            100 * components['cumulative_variance_explained']),
+            color='purple',
+            linewidth=2.5)
         ax[m].grid(False)
         ax[m].set_xlabel('number of components in model')
         ax[m].set_ylabel('cumulative variance explained (%)')
@@ -632,16 +637,16 @@ def compcor_variance_plot(metadata_files, metadata_sources=None,
         varexp = {}
 
         for i, thr in enumerate(varexp_thresh):
-            varexp[thr] = np.searchsorted(
-                components['cumulative_variance_explained'], thr) + 1
-            ax[m].axhline(y=100*thr, color='lightgrey', linewidth=0.25)
+            varexp[thr] = np.atleast_1d(np.searchsorted(
+                components['cumulative_variance_explained'], thr)) + 1
+            ax[m].axhline(y=100 * thr, color='lightgrey', linewidth=0.25)
             ax[m].axvline(x=varexp[thr], color='C{}'.format(i),
                           linewidth=2, linestyle=':')
-            ax[m].text(0, 100*thr, '{:.0f}'.format(100*thr),
+            ax[m].text(0, 100 * thr, '{:.0f}'.format(100 * thr),
                        fontsize='x-small', bbox=bbox_txt)
             ax[m].text(varexp[thr][0], 25,
                        '{} components explain\n{:.0f}% of variance'.format(
-                            varexp[thr][0], 100*thr),
+                            varexp[thr][0], 100 * thr),
                        rotation=90,
                        horizontalalignment='center',
                        fontsize='xx-small',
@@ -702,25 +707,25 @@ def confounds_correlation_plot(confounds_file, output_file=None, figure=None,
     confounds_data = confounds_data.loc[:, np.logical_not(
         np.isclose(confounds_data.var(skipna=True), 0))]
     corr = confounds_data.corr()
-    np.fill_diagonal(corr.values, 0)
 
     gscorr = corr.copy()
     gscorr['index'] = gscorr.index
     gscorr[reference] = np.abs(gscorr[reference])
     gs_descending = gscorr.sort_values(by=reference,
                                        ascending=False)['index']
-
-    if corr.shape[0] > max_dim:
-        gs_descending = gs_descending[:max_dim]
-        features = [p for p in corr.columns if p in gs_descending]
-        corr = corr.loc[features, features]
     n_vars = corr.shape[0]
+    max_dim = min(n_vars, max_dim)
+
+    gs_descending = gs_descending[:max_dim]
+    features = [p for p in corr.columns if p in gs_descending]
+    corr = corr.loc[features, features]
+    np.fill_diagonal(corr.values, 0)
 
     if figure is None:
-        plt.figure(figsize=(3*n_vars*0.3, n_vars*0.3))
-    gs = mgs.GridSpec(1, 15)
-    ax0 = plt.subplot(gs[0, :7])
-    ax1 = plt.subplot(gs[0, 7:])
+        plt.figure(figsize=(15, 5))
+    gs = mgs.GridSpec(1, 21)
+    ax0 = plt.subplot(gs[0, :10])
+    ax1 = plt.subplot(gs[0, 11:])
 
     mask = np.zeros_like(corr, dtype=np.bool)
     mask[np.triu_indices_from(mask)] = True

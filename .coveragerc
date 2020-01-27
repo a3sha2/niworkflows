@@ -1,7 +1,0 @@
-[run]
-branch = True
-source = niworkflows/*
-include = niworkflows/*
-omit = */setup.py
-[report]
-include = niworkflows/*

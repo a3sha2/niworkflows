@@ -1,18 +1,14 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
-"""
-Nipype interfaces for ANTs commands
-"""
-
+"""Nipype interfaces for ANTs' commands."""
 import os
+from glob import glob
 from nipype.interfaces import base
 from nipype.interfaces.ants.base import ANTSCommandInputSpec, ANTSCommand
 from nipype.interfaces.base import traits, isdefined
 
 
-class ImageMathInputSpec(ANTSCommandInputSpec):
+class _ImageMathInputSpec(ANTSCommandInputSpec):
     dimension = traits.Int(3, usedefault=True, position=1, argstr='%d',
                            desc='dimension of output image')
     output_image = base.File(position=2, argstr='%s', name_source=['op1'],
@@ -24,27 +20,42 @@ class ImageMathInputSpec(ANTSCommandInputSpec):
                     desc='first operator')
     op2 = traits.Either(base.File(exists=True), base.Str, position=-1,
                         argstr='%s', desc='second operator')
+    copy_header = traits.Bool(
+        True, usedefault=True,
+        desc='copy headers of the original image into the output (corrected) file')
 
 
-class ImageMathOuputSpec(base.TraitedSpec):
+class _ImageMathOuputSpec(base.TraitedSpec):
     output_image = base.File(exists=True, desc='output image file')
 
 
 class ImageMath(ANTSCommand):
     """
-    Operations over images
+    Operations over images.
 
-    Example:
-    --------
+    Example
+    -------
+    >>> maths = ImageMath(dimension=3, op1=nifti_fname, operation='+', op2='2')
+    >>> result = maths.run()
+    >>> np.all(nb.load(result.outputs.output_image).get_sform() ==
+    ...        nb.load(nifti_fname).get_sform())
+    True
 
     """
 
     _cmd = 'ImageMath'
-    input_spec = ImageMathInputSpec
-    output_spec = ImageMathOuputSpec
+    input_spec = _ImageMathInputSpec
+    output_spec = _ImageMathOuputSpec
+
+    def _list_outputs(self):
+        outputs = super(ImageMath, self)._list_outputs()
+        if self.inputs.copy_header:  # Fix headers
+            _copy_header(self.inputs.op1, outputs['output_image'],
+                         set_dtype=False)
+        return outputs
 
 
-class ResampleImageBySpacingInputSpec(ANTSCommandInputSpec):
+class _ResampleImageBySpacingInputSpec(ANTSCommandInputSpec):
     dimension = traits.Int(3, usedefault=True, position=1, argstr='%d',
                            desc='dimension of output image')
     input_image = base.File(exists=True, mandatory=True, position=2, argstr='%s',
@@ -66,43 +77,46 @@ class ResampleImageBySpacingInputSpec(ANTSCommandInputSpec):
                             position=-1, requires=['addvox'])
 
 
-class ResampleImageBySpacingOutputSpec(base.TraitedSpec):
+class _ResampleImageBySpacingOutputSpec(base.TraitedSpec):
     output_image = traits.File(exists=True, desc='resampled file')
 
 
 class ResampleImageBySpacing(ANTSCommand):
     """
-    Resamples an image with a given spacing
+    Resample an image with a given spacing.
 
-    Example:
+    Examples
     --------
-
     >>> res = ResampleImageBySpacing(dimension=3)
-    >>> res.inputs.input_image = 'input.nii.gz'
+    >>> res.inputs.input_image = nifti_fname
     >>> res.inputs.output_image = 'output.nii.gz'
     >>> res.inputs.out_spacing = (4, 4, 4)
-    'ResampleImageBySpacing input.nii.gz output.nii.gz 4 4 4'
+    >>> res.cmdline  #doctest: +ELLIPSIS
+    'ResampleImageBySpacing 3 .../test.nii.gz output.nii.gz 4 4 4'
 
     >>> res = ResampleImageBySpacing(dimension=3)
-    >>> res.inputs.input_image = 'input.nii.gz'
+    >>> res.inputs.input_image = nifti_fname
     >>> res.inputs.output_image = 'output.nii.gz'
     >>> res.inputs.out_spacing = (4, 4, 4)
     >>> res.inputs.apply_smoothing = True
-    'ResampleImageBySpacing input.nii.gz output.nii.gz 4 4 4 1'
+    >>> res.cmdline  #doctest: +ELLIPSIS
+    'ResampleImageBySpacing 3 .../test.nii.gz output.nii.gz 4 4 4 1'
 
     >>> res = ResampleImageBySpacing(dimension=3)
-    >>> res.inputs.input_image = 'input.nii.gz'
+    >>> res.inputs.input_image = nifti_fname
     >>> res.inputs.output_image = 'output.nii.gz'
     >>> res.inputs.out_spacing = (4, 4, 4)
     >>> res.inputs.apply_smoothing = True
     >>> res.inputs.addvox = 2
     >>> res.inputs.nn_interp = False
-    'ResampleImageBySpacing input.nii.gz output.nii.gz 4 4 4 1 2 0'
+    >>> res.cmdline  #doctest: +ELLIPSIS
+    'ResampleImageBySpacing 3 .../test.nii.gz output.nii.gz 4 4 4 1 2 0'
 
     """
+
     _cmd = 'ResampleImageBySpacing'
-    input_spec = ResampleImageBySpacingInputSpec
-    output_spec = ResampleImageBySpacingOutputSpec
+    input_spec = _ResampleImageBySpacingInputSpec
+    output_spec = _ResampleImageBySpacingOutputSpec
 
     def _format_arg(self, name, trait_spec, value):
         if name == 'out_spacing':
@@ -115,7 +129,7 @@ class ResampleImageBySpacing(ANTSCommand):
             name, trait_spec, value)
 
 
-class ThresholdImageInputSpec(ANTSCommandInputSpec):
+class _ThresholdImageInputSpec(ANTSCommandInputSpec):
     dimension = traits.Int(3, usedefault=True, position=1, argstr='%d',
                            desc='dimension of output image')
     input_image = base.File(exists=True, mandatory=True, position=2, argstr='%s',
@@ -140,42 +154,58 @@ class ThresholdImageInputSpec(ANTSCommandInputSpec):
                                 desc='inside value')
     outside_value = traits.Float(0, position=7, argstr='%f', requires=['th_low'],
                                  desc='outside value')
+    copy_header = traits.Bool(
+        True, mandatory=True, usedefault=True,
+        desc='copy headers of the original image into the output (corrected) file')
 
 
-class ThresholdImageOutputSpec(base.TraitedSpec):
+class _ThresholdImageOutputSpec(base.TraitedSpec):
     output_image = traits.File(exists=True, desc='resampled file')
 
 
 class ThresholdImage(ANTSCommand):
     """
-    Apply thresholds on images
+    Apply thresholds on images.
 
-    Example:
+    Examples
     --------
+    >>> thres = ThresholdImage(dimension=3)
+    >>> thres.inputs.input_image = nifti_fname
+    >>> thres.inputs.output_image = 'output.nii.gz'
+    >>> thres.inputs.th_low = 0.5
+    >>> thres.inputs.th_high = 1.0
+    >>> thres.inputs.inside_value = 1.0
+    >>> thres.inputs.outside_value = 0.0
+    >>> thres.cmdline  #doctest: +ELLIPSIS
+    'ThresholdImage 3 .../test.nii.gz output.nii.gz 0.500000 1.000000 1.000000 0.000000'
 
-    >>> res = ThresholdImage(dimension=3)
-    >>> res.inputs.input_image = 'input.nii.gz'
-    >>> res.inputs.output_image = 'output.nii.gz'
-    >>> res.inputs.th_low = 0.5
-    >>> res.inputs.th_high = 1.0
-    >>> res.inputs.inside_val = 1.0
-    >>> res.inputs.outside_val = 0.0
-    'ThresholdImage input.nii.gz output.nii.gz 0.50000 1.00000 1.00000 0.00000'
+    >>> result = thres.run()
+    >>> os.path.exists(result.outputs.output_image)
+    True
 
-    >>> res = ThresholdImage(dimension=3)
-    >>> res.inputs.input_image = 'input.nii.gz'
-    >>> res.inputs.output_image = 'output.nii.gz'
-    >>> res.inputs.mode = 'Kmeans'
-    >>> res.inputs.num_thresholds = 4
-    'ThresholdImage input.nii.gz output.nii.gz Kmeans 4'
+    >>> thres = ThresholdImage(dimension=3)
+    >>> thres.inputs.input_image = nifti_fname
+    >>> thres.inputs.output_image = 'output.nii.gz'
+    >>> thres.inputs.mode = 'Kmeans'
+    >>> thres.inputs.num_thresholds = 4
+    >>> thres.cmdline  #doctest: +ELLIPSIS
+    'ThresholdImage 3 .../test.nii.gz output.nii.gz Kmeans 4'
 
     """
+
     _cmd = 'ThresholdImage'
-    input_spec = ThresholdImageInputSpec
-    output_spec = ThresholdImageOutputSpec
+    input_spec = _ThresholdImageInputSpec
+    output_spec = _ThresholdImageOutputSpec
+
+    def _list_outputs(self):
+        outputs = super(ThresholdImage, self)._list_outputs()
+        if self.inputs.copy_header:  # Fix headers
+            _copy_header(self.inputs.input_image, outputs['output_image'],
+                         set_dtype=False)
+        return outputs
 
 
-class AIInputSpec(ANTSCommandInputSpec):
+class _AIInputSpec(ANTSCommandInputSpec):
     dimension = traits.Int(3, usedefault=True, argstr='-d %d',
                            desc='dimension of output image')
     verbose = traits.Bool(False, usedefault=True, argstr='-v %d',
@@ -231,22 +261,16 @@ class AIInputSpec(ANTSCommandInputSpec):
         desc='output file name')
 
 
-class AIOuputSpec(base.TraitedSpec):
+class _AIOuputSpec(base.TraitedSpec):
     output_transform = traits.File(exists=True, desc='output file name')
 
 
 class AI(ANTSCommand):
-    """
-    The replacement for ``AffineInitializer``.
-
-    Example:
-    --------
-
-    """
+    """Replaces ``AffineInitializer``."""
 
     _cmd = 'antsAI'
-    input_spec = AIInputSpec
-    output_spec = AIOuputSpec
+    input_spec = _AIInputSpec
+    output_spec = _AIOuputSpec
 
     def _run_interface(self, runtime, correct_return_codes=(0, )):
         runtime = super(AI, self)._run_interface(
@@ -281,3 +305,245 @@ class AI(ANTSCommand):
 
     def _list_outputs(self):
         return getattr(self, '_output')
+
+
+class _AntsJointFusionInputSpec(ANTSCommandInputSpec):
+    dimension = traits.Enum(
+        3,
+        2,
+        4,
+        argstr='-d %d',
+        desc='This option forces the image to be treated '
+        'as a specified-dimensional image. If not '
+        'specified, the program tries to infer the '
+        'dimensionality from the input image.')
+    target_image = traits.List(
+        base.InputMultiPath(base.File(exists=True)),
+        argstr='-t %s',
+        mandatory=True,
+        desc='The target image (or '
+        'multimodal target images) assumed to be '
+        'aligned to a common image domain.')
+    atlas_image = traits.List(
+        base.InputMultiPath(base.File(exists=True)),
+        argstr="-g %s...",
+        mandatory=True,
+        desc='The atlas image (or '
+        'multimodal atlas images) assumed to be '
+        'aligned to a common image domain.')
+    atlas_segmentation_image = base.InputMultiPath(
+        base.File(exists=True),
+        argstr="-l %s...",
+        mandatory=True,
+        desc='The atlas segmentation '
+        'images. For performing label fusion the number '
+        'of specified segmentations should be identical '
+        'to the number of atlas image sets.')
+    alpha = traits.Float(
+        default_value=0.1,
+        usedefault=True,
+        argstr='-a %s',
+        desc=(
+            'Regularization '
+            'term added to matrix Mx for calculating the inverse. Default = 0.1'
+        ))
+    beta = traits.Float(
+        default_value=2.0,
+        usedefault=True,
+        argstr='-b %s',
+        desc=('Exponent for mapping '
+              'intensity difference to the joint error. Default = 2.0'))
+    retain_label_posterior_images = traits.Bool(
+        False,
+        argstr='-r',
+        usedefault=True,
+        requires=['atlas_segmentation_image'],
+        desc=('Retain label posterior probability images. Requires '
+              'atlas segmentations to be specified. Default = false'))
+    retain_atlas_voting_images = traits.Bool(
+        False,
+        argstr='-f',
+        usedefault=True,
+        desc=('Retain atlas voting images. Default = false'))
+    constrain_nonnegative = traits.Bool(
+        False,
+        argstr='-c',
+        usedefault=True,
+        desc=('Constrain solution to non-negative weights.'))
+    patch_radius = traits.ListInt(
+        minlen=3,
+        maxlen=3,
+        argstr='-p %s',
+        desc=('Patch radius for similarity measures.'
+              'Default: 2x2x2'))
+    patch_metric = traits.Enum(
+        'PC',
+        'MSQ',
+        argstr='-m %s',
+        desc=('Metric to be used in determining the most similar '
+              'neighborhood patch. Options include Pearson\'s '
+              'correlation (PC) and mean squares (MSQ). Default = '
+              'PC (Pearson correlation).'))
+    search_radius = traits.List(
+        [3, 3, 3],
+        minlen=1,
+        maxlen=3,
+        argstr='-s %s',
+        usedefault=True,
+        desc=('Search radius for similarity measures. Default = 3x3x3. '
+              'One can also specify an image where the value at the '
+              'voxel specifies the isotropic search radius at that voxel.'))
+    exclusion_image_label = traits.List(
+        traits.Str(),
+        argstr='-e %s',
+        requires=['exclusion_image'],
+        desc=('Specify a label for the exclusion region.'))
+    exclusion_image = traits.List(
+        base.File(exists=True),
+        desc=('Specify an exclusion region for the given label.'))
+    mask_image = base.File(
+        argstr='-x %s',
+        exists=True,
+        desc='If a mask image '
+        'is specified, fusion is only performed in the mask region.')
+    out_label_fusion = base.File(
+        argstr="%s", hash_files=False, desc='The output label fusion image.')
+    out_intensity_fusion_name_format = traits.Str(
+        argstr="",
+        desc='Optional intensity fusion '
+        'image file name format. '
+        '(e.g. "antsJointFusionIntensity_%d.nii.gz")')
+    out_label_post_prob_name_format = traits.Str(
+        'antsJointFusionPosterior_%d.nii.gz',
+        requires=['out_label_fusion', 'out_intensity_fusion_name_format'],
+        desc='Optional label posterior probability '
+        'image file name format.')
+    out_atlas_voting_weight_name_format = traits.Str(
+        'antsJointFusionVotingWeight_%d.nii.gz',
+        requires=[
+            'out_label_fusion', 'out_intensity_fusion_name_format',
+            'out_label_post_prob_name_format'
+        ],
+        desc='Optional atlas voting weight image '
+        'file name format.')
+    verbose = traits.Bool(False, argstr="-v", desc=('Verbose output.'))
+
+
+class _AntsJointFusionOutputSpec(base.TraitedSpec):
+    out_label_fusion = base.File(exists=True)
+    out_intensity_fusion = base.OutputMultiPath(
+        base.File(exists=True))
+    out_label_post_prob = base.OutputMultiPath(
+        base.File(exists=True))
+    out_atlas_voting_weight = base.OutputMultiPath(
+        base.File(exists=True))
+
+
+class AntsJointFusion(ANTSCommand):
+    """Run ``antsJoinFusion`` (finds the consensus segmentation)."""
+
+    input_spec = _AntsJointFusionInputSpec
+    output_spec = _AntsJointFusionOutputSpec
+    _cmd = 'antsJointFusion'
+
+    def _format_arg(self, opt, spec, val):
+        if opt == 'exclusion_image_label':
+            retval = []
+            for ii in range(len(self.inputs.exclusion_image_label)):
+                retval.append(
+                    '-e {0}[{1}]'.format(self.inputs.exclusion_image_label[ii],
+                                         self.inputs.exclusion_image[ii]))
+            retval = ' '.join(retval)
+        elif opt == 'patch_radius':
+            retval = '-p {0}'.format(self._format_xarray(val))
+        elif opt == 'search_radius':
+            retval = '-s {0}'.format(self._format_xarray(val))
+        elif opt == 'out_label_fusion':
+            if isdefined(self.inputs.out_intensity_fusion_name_format):
+                if isdefined(self.inputs.out_label_post_prob_name_format):
+                    if isdefined(
+                            self.inputs.out_atlas_voting_weight_name_format):
+                        retval = '-o [{0}, {1}, {2}, {3}]'.format(
+                            self.inputs.out_label_fusion,
+                            self.inputs.out_intensity_fusion_name_format,
+                            self.inputs.out_label_post_prob_name_format,
+                            self.inputs.out_atlas_voting_weight_name_format)
+                    else:
+                        retval = '-o [{0}, {1}, {2}]'.format(
+                            self.inputs.out_label_fusion,
+                            self.inputs.out_intensity_fusion_name_format,
+                            self.inputs.out_label_post_prob_name_format)
+                else:
+                    retval = '-o [{0}, {1}]'.format(
+                        self.inputs.out_label_fusion,
+                        self.inputs.out_intensity_fusion_name_format)
+            else:
+                retval = '-o {0}'.format(self.inputs.out_label_fusion)
+        elif opt == 'out_intensity_fusion_name_format':
+            retval = ''
+            if not isdefined(self.inputs.out_label_fusion):
+                retval = '-o {0}'.format(
+                    self.inputs.out_intensity_fusion_name_format)
+        elif opt == 'atlas_image':
+            atlas_image_cmd = " ".join([
+                '-g [{0}]'.format(", ".join("'%s'" % fn for fn in ai))
+                for ai in self.inputs.atlas_image
+            ])
+            retval = atlas_image_cmd
+        elif opt == 'target_image':
+            target_image_cmd = " ".join([
+                '-t [{0}]'.format(", ".join("'%s'" % fn for fn in ai))
+                for ai in self.inputs.target_image
+            ])
+            retval = target_image_cmd
+        elif opt == 'atlas_segmentation_image':
+            if len(val) != len(self.inputs.atlas_image):
+                raise ValueError(
+                    "Number of specified segmentations should be identical to the number "
+                    "of atlas image sets {0}!={1}".format(
+                        len(val), len(self.inputs.atlas_image)))
+
+            atlas_segmentation_image_cmd = " ".join([
+                '-l {0}'.format(fn)
+                for fn in self.inputs.atlas_segmentation_image
+            ])
+            retval = atlas_segmentation_image_cmd
+        else:
+
+            return super(AntsJointFusion, self)._format_arg(opt, spec, val)
+        return retval
+
+    def _list_outputs(self):
+        outputs = self._outputs().get()
+        if isdefined(self.inputs.out_label_fusion):
+            outputs['out_label_fusion'] = os.path.abspath(
+                self.inputs.out_label_fusion)
+        if isdefined(self.inputs.out_intensity_fusion_name_format):
+            outputs['out_intensity_fusion'] = glob(os.path.abspath(
+                self.inputs.out_intensity_fusion_name_format.replace(
+                    '%d', '*'))
+            )
+        if isdefined(self.inputs.out_label_post_prob_name_format):
+            outputs['out_label_post_prob'] = glob(os.path.abspath(
+                self.inputs.out_label_post_prob_name_format.replace(
+                    '%d', '*'))
+            )
+        if isdefined(self.inputs.out_atlas_voting_weight_name_format):
+            outputs['out_atlas_voting_weight'] = glob(os.path.abspath(
+                self.inputs.out_atlas_voting_weight_name_format.replace(
+                    '%d', '*'))
+            )
+        return outputs
+
+
+def _copy_header(header_file, in_file, set_dtype=True):
+    """Copy header from input image to an output image."""
+    import nibabel as nb
+    in_img = nb.load(header_file)
+    out_img = nb.load(in_file, mmap=False)
+    new_img = out_img.__class__(out_img.dataobj, in_img.affine,
+                                in_img.header)
+    if set_dtype:
+        new_img.set_data_dtype(out_img.get_data_dtype())
+    new_img.to_filename(in_file)
+    return in_file

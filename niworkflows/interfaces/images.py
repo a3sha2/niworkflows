@@ -1,39 +1,34 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
-"""
-Image tools interfaces
-~~~~~~~~~~~~~~~~~~~~~~
-
-
-"""
-
+"""Image tools interfaces."""
 import os
 import numpy as np
 import nibabel as nb
 import nilearn.image as nli
 from textwrap import indent
+import transforms3d
 
 from nipype import logging
 from nipype.utils.filemanip import fname_presuffix
 from nipype.interfaces.base import (
     traits, TraitedSpec, BaseInterfaceInputSpec, SimpleInterface,
-    File, InputMultiPath, OutputMultiPath)
+    File, InputMultiPath, OutputMultiPath, isdefined)
 from nipype.interfaces import fsl
 
 LOGGER = logging.getLogger('nipype.interface')
 
 
-class IntraModalMergeInputSpec(BaseInterfaceInputSpec):
+class _IntraModalMergeInputSpec(BaseInterfaceInputSpec):
     in_files = InputMultiPath(File(exists=True), mandatory=True,
                               desc='input files')
+    in_mask = File(exists=True, desc='input mask for grand mean scaling')
     hmc = traits.Bool(True, usedefault=True)
     zero_based_avg = traits.Bool(True, usedefault=True)
     to_ras = traits.Bool(True, usedefault=True)
+    grand_mean_scaling = traits.Bool(False, usedefault=True)
 
 
-class IntraModalMergeOutputSpec(TraitedSpec):
+class _IntraModalMergeOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='merged image')
     out_avg = File(exists=True, desc='average image')
     out_mats = OutputMultiPath(File(exists=True), desc='output matrices')
@@ -41,60 +36,88 @@ class IntraModalMergeOutputSpec(TraitedSpec):
 
 
 class IntraModalMerge(SimpleInterface):
-    input_spec = IntraModalMergeInputSpec
-    output_spec = IntraModalMergeOutputSpec
+    """
+    Calculate an average of the inputs.
+
+    If the input is 3D, returns the original image.
+    Otherwise, splits the images and merges them after
+    head-motion correction with FSL ``mcflirt``.
+    """
+
+    input_spec = _IntraModalMergeInputSpec
+    output_spec = _IntraModalMergeOutputSpec
 
     def _run_interface(self, runtime):
         in_files = self.inputs.in_files
         if not isinstance(in_files, list):
             in_files = [self.inputs.in_files]
 
-        # Generate output average name early
-        self._results['out_avg'] = fname_presuffix(self.inputs.in_files[0],
-                                                   suffix='_avg', newpath=runtime.cwd)
-
         if self.inputs.to_ras:
             in_files = [reorient(inf, newpath=runtime.cwd)
                         for inf in in_files]
 
-        if len(in_files) == 1:
-            filenii = nb.load(in_files[0])
-            filedata = filenii.get_data()
+        run_hmc = self.inputs.hmc and len(in_files) > 1
 
-            # magnitude files can have an extra dimension empty
-            if filedata.ndim == 5:
-                sqdata = np.squeeze(filedata)
-                if sqdata.ndim == 5:
-                    raise RuntimeError('Input image (%s) is 5D' % in_files[0])
-                else:
-                    in_files = [fname_presuffix(in_files[0], suffix='_squeezed',
-                                                newpath=runtime.cwd)]
-                    nb.Nifti1Image(sqdata, filenii.affine,
-                                   filenii.header).to_filename(in_files[0])
+        nii_list = []
+        # Remove one-sized extra dimensions
+        for i, f in enumerate(in_files):
+            filenii = nb.load(f)
+            filenii = nb.squeeze_image(filenii)
+            if len(filenii.shape) == 5:
+                raise RuntimeError('Input image (%s) is 5D.' % f)
+            if filenii.dataobj.ndim == 4:
+                nii_list += nb.four_to_three(filenii)
+            else:
+                nii_list.append(filenii)
 
-            if np.squeeze(nb.load(in_files[0]).get_data()).ndim < 4:
-                self._results['out_file'] = in_files[0]
-                self._results['out_avg'] = in_files[0]
-                # TODO: generate identity out_mats and zero-filled out_movpar
-                return runtime
-            in_files = in_files[0]
+        if len(nii_list) > 1:
+            filenii = nb.concat_images(nii_list)
         else:
-            magmrg = fsl.Merge(dimension='t', in_files=self.inputs.in_files)
-            in_files = magmrg.run().outputs.merged_file
-        mcflirt = fsl.MCFLIRT(cost='normcorr', save_mats=True, save_plots=True,
-                              ref_vol=0, in_file=in_files)
-        mcres = mcflirt.run()
-        self._results['out_mats'] = mcres.outputs.mat_file
-        self._results['out_movpar'] = mcres.outputs.par_file
-        self._results['out_file'] = mcres.outputs.out_file
+            filenii = nii_list[0]
 
-        hmcnii = nb.load(mcres.outputs.out_file)
-        hmcdat = hmcnii.get_data().mean(axis=3)
+        merged_fname = fname_presuffix(self.inputs.in_files[0],
+                                       suffix='_merged', newpath=runtime.cwd)
+        filenii.to_filename(merged_fname)
+        self._results['out_file'] = merged_fname
+        self._results['out_avg'] = merged_fname
+
+        if filenii.dataobj.ndim < 4:
+            # TODO: generate identity out_mats and zero-filled out_movpar
+            return runtime
+
+        if run_hmc:
+            mcflirt = fsl.MCFLIRT(cost='normcorr', save_mats=True, save_plots=True,
+                                  ref_vol=0, in_file=merged_fname)
+            mcres = mcflirt.run()
+            filenii = nb.load(mcres.outputs.out_file)
+            self._results['out_file'] = mcres.outputs.out_file
+            self._results['out_mats'] = mcres.outputs.mat_file
+            self._results['out_movpar'] = mcres.outputs.par_file
+
+        hmcdata = filenii.get_fdata(dtype='float32')
+        if self.inputs.grand_mean_scaling:
+            if not isdefined(self.inputs.in_mask):
+                mean = np.median(hmcdata, axis=-1)
+                thres = np.percentile(mean, 25)
+                mask = mean > thres
+            else:
+                mask = nb.load(self.inputs.in_mask).get_fdata(dtype='float32') > 0.5
+
+            nimgs = hmcdata.shape[-1]
+            means = np.median(hmcdata[mask[..., np.newaxis]].reshape((-1, nimgs)).T,
+                              axis=-1)
+            max_mean = means.max()
+            for i in range(nimgs):
+                hmcdata[..., i] *= max_mean / means[i]
+
+        hmcdata = hmcdata.mean(axis=3)
         if self.inputs.zero_based_avg:
-            hmcdat -= hmcdat.min()
+            hmcdata -= hmcdata.min()
 
+        self._results['out_avg'] = fname_presuffix(self.inputs.in_files[0],
+                                                   suffix='_avg', newpath=runtime.cwd)
         nb.Nifti1Image(
-            hmcdat, hmcnii.affine, hmcnii.header).to_filename(
+            hmcdata, filenii.affine, filenii.header).to_filename(
             self._results['out_avg'])
 
         return runtime
@@ -114,13 +137,13 @@ CONFORMATION_TEMPLATE = """\t\t<h3 class="elem-title">Anatomical Conformation</h
 DISCARD_TEMPLATE = """\t\t\t\t<li><abbr title="{path}">{basename}</abbr></li>"""
 
 
-class TemplateDimensionsInputSpec(BaseInterfaceInputSpec):
+class _TemplateDimensionsInputSpec(BaseInterfaceInputSpec):
     t1w_list = InputMultiPath(File(exists=True), mandatory=True, desc='input T1w images')
     max_scale = traits.Float(3.0, usedefault=True,
                              desc='Maximum scaling factor in images to accept')
 
 
-class TemplateDimensionsOutputSpec(TraitedSpec):
+class _TemplateDimensionsOutputSpec(TraitedSpec):
     t1w_valid_list = OutputMultiPath(exists=True, desc='valid T1w images')
     target_zooms = traits.Tuple(traits.Float, traits.Float, traits.Float,
                                 desc='Target zoom information')
@@ -144,8 +167,8 @@ class TemplateDimensions(SimpleInterface):
     To select images that require no scaling (i.e. all have smallest voxel sizes),
     set ``max_scale=1``.
     """
-    input_spec = TemplateDimensionsInputSpec
-    output_spec = TemplateDimensionsOutputSpec
+    input_spec = _TemplateDimensionsInputSpec
+    output_spec = _TemplateDimensionsOutputSpec
 
     def _generate_segment(self, discards, dims, zooms):
         items = [DISCARD_TEMPLATE.format(path=path, basename=os.path.basename(path))
@@ -198,7 +221,7 @@ class TemplateDimensions(SimpleInterface):
         return runtime
 
 
-class ConformInputSpec(BaseInterfaceInputSpec):
+class _ConformInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True, desc='Input image')
     target_zooms = traits.Tuple(traits.Float, traits.Float, traits.Float,
                                 desc='Target zoom information')
@@ -206,24 +229,25 @@ class ConformInputSpec(BaseInterfaceInputSpec):
                                 desc='Target shape information')
 
 
-class ConformOutputSpec(TraitedSpec):
+class _ConformOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='Conformed image')
     transform = File(exists=True, desc='Conformation transform (voxel-to-voxel)')
 
 
 class Conform(SimpleInterface):
-    """Conform a series of T1w images to enable merging.
+    """
+    Conform a series of T1w images to enable merging.
 
     Performs two basic functions:
-
     #. Orient to RAS (left-right, posterior-anterior, inferior-superior)
     #. Resample to target zooms (voxel sizes) and shape (number of voxels)
 
     Note that the output transforms are voxel-to-voxel; the RAS-to-RAS
     transform is the identity transform.
+
     """
-    input_spec = ConformInputSpec
-    output_spec = ConformOutputSpec
+    input_spec = _ConformInputSpec
+    output_spec = _ConformOutputSpec
 
     def _run_interface(self, runtime):
         # Load image, orient as RAS
@@ -271,7 +295,7 @@ class Conform(SimpleInterface):
                 offset = (reoriented.affine[:3, 3] * size_factor - reoriented.affine[:3, 3])
                 target_affine[:3, 3] = reoriented.affine[:3, 3] + offset.astype(int)
 
-            data = nli.resample_img(reoriented, target_affine, target_shape).get_data()
+            data = nli.resample_img(reoriented, target_affine, target_shape).dataobj
             conform_xfm = np.linalg.inv(reoriented.affine).dot(target_affine)
             reoriented = reoriented.__class__(data, target_affine, reoriented.header)
 
@@ -294,18 +318,18 @@ class Conform(SimpleInterface):
         return runtime
 
 
-class ValidateImageInputSpec(BaseInterfaceInputSpec):
+class _ValidateImageInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True, desc='input image')
 
 
-class ValidateImageOutputSpec(TraitedSpec):
+class _ValidateImageOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='validated image')
     out_report = File(exists=True, desc='HTML segment containing warning')
 
 
 class ValidateImage(SimpleInterface):
     """
-    Check the correctness of x-form headers (matrix and code)
+    Check the correctness of x-form headers (matrix and code).
 
     This interface implements the `following logic
     <https://github.com/poldracklab/fmriprep/issues/873#issuecomment-349394544>`_:
@@ -340,9 +364,11 @@ class ValidateImage(SimpleInterface):
 | sform, qform <- best affine; scode, qcode <- 1 |
     +-------------------+------------------+------------------+------------------\
 +------------------------------------------------+
+
     """
-    input_spec = ValidateImageInputSpec
-    output_spec = ValidateImageOutputSpec
+
+    input_spec = _ValidateImageInputSpec
+    output_spec = _ValidateImageOutputSpec
 
     def _run_interface(self, runtime):
         img = nb.load(self.inputs.in_file)
@@ -392,11 +418,26 @@ class ValidateImage(SimpleInterface):
         # Rows 3-4:
         # Note: if qform is not valid, matching_affines is False
         elif (valid_sform and sform_code > 0) and (not matching_affines or qform_code == 0):
-            img.set_qform(img.get_sform(), sform_code)
+            img.set_qform(sform, sform_code)
+            new_qform = img.get_qform()
+            if np.allclose(new_qform, qform) and qform_code > 0:
+                # False alarm
+                self._results['out_file'] = self.inputs.in_file
+                open(out_report, 'w').close()
+                self._results['out_report'] = out_report
+                return runtime
+            diff = np.linalg.inv(qform) @ new_qform
+            trans, rot, _, _ = transforms3d.affines.decompose44(diff)
+            angle = transforms3d.axangles.mat2axangle(rot)[1]
+            total_trans = np.sqrt(np.sum(trans * trans))  # Add angle and total_trans to report
             warning_txt = 'Note on orientation: qform matrix overwritten'
             description = """\
-<p class="elem-desc">The qform has been copied from sform.</p>
-"""
+    <p class="elem-desc">
+    The qform has been copied from sform.
+    The difference in angle is {angle:.02g}.
+    The difference in translation is {total_trans:.02g}.
+    </p>
+    """.format(angle=angle, total_trans=total_trans)
             if not valid_qform and qform_code > 0:
                 warning_txt = 'WARNING - Invalid qform information'
                 description = """\
@@ -430,7 +471,7 @@ class ValidateImage(SimpleInterface):
         return runtime
 
 
-class DemeanImageInputSpec(BaseInterfaceInputSpec):
+class _DemeanImageInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True,
                    desc='image to be demeaned')
     in_mask = File(exists=True, mandatory=True,
@@ -439,13 +480,13 @@ class DemeanImageInputSpec(BaseInterfaceInputSpec):
                             desc='demean only within mask')
 
 
-class DemeanImageOutputSpec(TraitedSpec):
+class _DemeanImageOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='demeaned image')
 
 
 class DemeanImage(SimpleInterface):
-    input_spec = DemeanImageInputSpec
-    output_spec = DemeanImageOutputSpec
+    input_spec = _DemeanImageInputSpec
+    output_spec = _DemeanImageOutputSpec
 
     def _run_interface(self, runtime):
         self._results['out_file'] = demean(
@@ -456,7 +497,7 @@ class DemeanImage(SimpleInterface):
         return runtime
 
 
-class FilledImageLikeInputSpec(BaseInterfaceInputSpec):
+class _FilledImageLikeInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True,
                    desc='image to be demeaned')
     fill_value = traits.Float(1.0, usedefault=True,
@@ -465,13 +506,13 @@ class FilledImageLikeInputSpec(BaseInterfaceInputSpec):
                         desc='force output data type')
 
 
-class FilledImageLikeOutputSpec(TraitedSpec):
+class _FilledImageLikeOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='demeaned image')
 
 
 class FilledImageLike(SimpleInterface):
-    input_spec = FilledImageLikeInputSpec
-    output_spec = FilledImageLikeOutputSpec
+    input_spec = _FilledImageLikeInputSpec
+    output_spec = _FilledImageLikeOutputSpec
 
     def _run_interface(self, runtime):
         self._results['out_file'] = nii_ones_like(
@@ -482,20 +523,20 @@ class FilledImageLike(SimpleInterface):
         return runtime
 
 
-class MatchHeaderInputSpec(BaseInterfaceInputSpec):
+class _MatchHeaderInputSpec(BaseInterfaceInputSpec):
     reference = File(exists=True, mandatory=True,
                      desc='NIfTI file with reference header')
     in_file = File(exists=True, mandatory=True,
                    desc='NIfTI file which header will be checked')
 
 
-class MatchHeaderOutputSpec(TraitedSpec):
+class _MatchHeaderOutputSpec(TraitedSpec):
     out_file = File(exists=True, desc='NIfTI file with fixed header')
 
 
 class MatchHeader(SimpleInterface):
-    input_spec = MatchHeaderInputSpec
-    output_spec = MatchHeaderOutputSpec
+    input_spec = _MatchHeaderInputSpec
+    output_spec = _MatchHeaderOutputSpec
 
     def _run_interface(self, runtime):
         refhdr = nb.load(self.inputs.reference).header.copy()
@@ -523,14 +564,14 @@ class MatchHeader(SimpleInterface):
         out_file = fname_presuffix(self.inputs.in_file, suffix='_hdr',
                                    newpath=runtime.cwd)
 
-        imgnii.__class__(imgnii.get_data(), imghdr.get_best_affine(),
+        imgnii.__class__(imgnii.dataobj, imghdr.get_best_affine(),
                          imghdr).to_filename(out_file)
         self._results['out_file'] = out_file
         return runtime
 
 
 def reorient(in_file, newpath=None):
-    """Reorient Nifti files to RAS"""
+    """Reorient Nifti files to RAS."""
     out_file = fname_presuffix(in_file, suffix='_ras', newpath=newpath)
     nb.as_closest_canonical(nb.load(in_file)).to_filename(out_file)
     return out_file
@@ -543,7 +584,7 @@ def extract_wm(in_seg, wm_label=3, newpath=None):
 
     nii = nb.load(in_seg)
     data = np.zeros(nii.shape, dtype=np.uint8)
-    data[nii.get_data() == wm_label] = 1
+    data[np.asanyarray(nii.dataobj) == wm_label] = 1
 
     out_file = fname_presuffix(in_seg, suffix='_wm', newpath=newpath)
     new = nb.Nifti1Image(data, nii.affine, nii.header)
@@ -553,7 +594,8 @@ def extract_wm(in_seg, wm_label=3, newpath=None):
 
 
 def normalize_xform(img):
-    """ Set identical, valid qform and sform matrices in an image
+    """
+    Set identical, valid qform and sform matrices in an image.
 
     Selects the best available affine (sform > qform > shape-based), and
     coerces it to be qform-compatible (no shears).
@@ -579,7 +621,7 @@ def normalize_xform(img):
             int(qform_code) == xform_code, int(sform_code) == xform_code)):
         return img
 
-    new_img = img.__class__(img.get_data(), xform, img.header)
+    new_img = img.__class__(img.dataobj, xform, img.header)
     # Unconditionally set sform/qform
     new_img.set_sform(xform, xform_code)
     new_img.set_qform(xform, xform_code)
@@ -587,7 +629,7 @@ def normalize_xform(img):
 
 
 def demean(in_file, in_mask, only_mask=False, newpath=None):
-    """Demean ``in_file`` within the mask defined by ``in_mask``"""
+    """Demean ``in_file`` within the mask defined by ``in_mask``."""
     import os
     import numpy as np
     import nibabel as nb
@@ -596,8 +638,8 @@ def demean(in_file, in_mask, only_mask=False, newpath=None):
     out_file = fname_presuffix(in_file, suffix='_demeaned',
                                newpath=os.getcwd())
     nii = nb.load(in_file)
-    msk = nb.load(in_mask).get_data()
-    data = nii.get_data()
+    msk = np.asanyarray(nb.load(in_mask).dataobj)
+    data = nii.get_fdata()
     if only_mask:
         data[msk > 0] -= np.median(data[msk > 0])
     else:
@@ -608,7 +650,7 @@ def demean(in_file, in_mask, only_mask=False, newpath=None):
 
 
 def nii_ones_like(in_file, value, dtype, newpath=None):
-    """Create a NIfTI file filled with ``value``, matching properties of ``in_file``"""
+    """Create a NIfTI file filled with ``value``, matching properties of ``in_file``."""
     import os
     import numpy as np
     import nibabel as nb
@@ -624,15 +666,22 @@ def nii_ones_like(in_file, value, dtype, newpath=None):
     return out_file
 
 
-class SignalExtractionInputSpec(BaseInterfaceInputSpec):
+class _SignalExtractionInputSpec(BaseInterfaceInputSpec):
     in_file = File(exists=True, mandatory=True, desc='4-D fMRI nii file')
     label_files = InputMultiPath(
         File(exists=True),
         mandatory=True,
-        desc='a 3-D label image, with 0 denoting '
-        'background, or a list of 3-D probability '
+        desc='a 3D label image, with 0 denoting '
+        'background, or a list of 3D probability '
         'maps (one per label) or the equivalent 4D '
         'file.')
+    prob_thres = traits.Range(
+        low=0.0,
+        high=1.0,
+        value=0.5,
+        usedefault=True,
+        desc='If label_files are probability masks, threshold '
+        'at specified probability.')
     class_labels = traits.List(
         mandatory=True,
         desc='Human-readable labels for each segment '
@@ -649,7 +698,7 @@ class SignalExtractionInputSpec(BaseInterfaceInputSpec):
         'signals.tsv by default')
 
 
-class SignalExtractionOutputSpec(TraitedSpec):
+class _SignalExtractionOutputSpec(TraitedSpec):
     out_file = File(
         exists=True,
         desc='tsv file containing the computed '
@@ -659,35 +708,50 @@ class SignalExtractionOutputSpec(TraitedSpec):
 
 
 class SignalExtraction(SimpleInterface):
-    """ Extract mean signals from a time series within a set of ROIs
+    """
+    Extract mean signals from a time series within a set of ROIs.
 
     This interface is intended to be a memory-efficient alternative to
     nipype.interfaces.nilearn.SignalExtraction.
     Not all features of nilearn.SignalExtraction are implemented at
     this time.
+
     """
-    input_spec = SignalExtractionInputSpec
-    output_spec = SignalExtractionOutputSpec
+
+    input_spec = _SignalExtractionInputSpec
+    output_spec = _SignalExtractionOutputSpec
 
     def _run_interface(self, runtime):
+        img = nb.load(self.inputs.in_file)
         mask_imgs = [nb.load(fname) for fname in self.inputs.label_files]
-        if len(mask_imgs) == 1:
+        if len(mask_imgs) == 1 and len(mask_imgs[0].shape) == 4:
             mask_imgs = nb.four_to_three(mask_imgs[0])
+        # This check assumes all input masks have same dimensions
+        if img.shape[:3] != mask_imgs[0].shape[:3]:
+            raise NotImplementedError(
+                "Input image and mask should be of "
+                "same dimensions before running SignalExtraction"
+                )
+        # Load the mask.
+        # If mask is a list, each mask is treated as its own ROI/parcel
+        # If mask is a 3D, each integer is treated as its own ROI/parcel
+        if len(mask_imgs) > 1:
+            masks = [np.asanyarray(mask_img.dataobj) >= self.inputs.prob_thres
+                     for mask_img in mask_imgs]
+        else:
+            labelsmap = np.asanyarray(mask_imgs[0].dataobj)
+            labels = np.unique(labelsmap)
+            labels = labels[labels != 0]
+            masks = [labelsmap == l for l in labels]
 
-        masks = [mask_img.get_data().astype(np.bool) for mask_img in mask_imgs]
-
-        n_masks = len(masks)
-
-        if n_masks != len(self.inputs.class_labels):
+        if len(masks) != len(self.inputs.class_labels):
             raise ValueError("Number of masks must match number of labels")
 
-        img = nb.load(self.inputs.in_file)
+        series = np.zeros((img.shape[3], len(masks)))
 
-        series = np.zeros((img.shape[3], n_masks))
-
-        data = img.get_data()
-        for j in range(n_masks):
-            series[:, j] = data[masks[j], :].mean(axis=0)
+        data = img.get_fdata()
+        for j, mask in enumerate(masks):
+            series[:, j] = data[mask, :].mean(axis=0)
 
         output = np.vstack((self.inputs.class_labels, series.astype(str)))
         self._results['out_file'] = os.path.join(runtime.cwd,

@@ -1,35 +1,29 @@
-# -*- coding: utf-8 -*-
 # emacs: -*- mode: python; py-indent-offset: 4; indent-tabs-mode: nil -*-
 # vi: set ft=python sts=4 ts=4 sw=4 et:
-"""
-ReportCapableInterfaces for segmentation tools
-
-
-"""
-from __future__ import absolute_import, division, print_function, unicode_literals
+"""ReportCapableInterfaces for segmentation tools."""
 import os
 
-from nipype.interfaces.base import File
+from nipype.interfaces.base import File, isdefined
 from nipype.interfaces import fsl, freesurfer
 from nipype.interfaces.mixins import reporting
 from . import report_base as nrc
 from .. import NIWORKFLOWS_LOG
 
 
-class FASTInputSpecRPT(nrc.SVGReportCapableInputSpec,
-                       fsl.preprocess.FASTInputSpec):
+class _FASTInputSpecRPT(nrc._SVGReportCapableInputSpec,
+                        fsl.preprocess.FASTInputSpec):
     pass
 
 
-class FASTOutputSpecRPT(reporting.ReportCapableOutputSpec,
-                        fsl.preprocess.FASTOutputSpec):
+class _FASTOutputSpecRPT(reporting.ReportCapableOutputSpec,
+                         fsl.preprocess.FASTOutputSpec):
     pass
 
 
 class FASTRPT(nrc.SegmentationRC,
               fsl.FAST):
-    input_spec = FASTInputSpecRPT
-    output_spec = FASTOutputSpecRPT
+    input_spec = _FASTInputSpecRPT
+    output_spec = _FASTOutputSpecRPT
 
     def _run_interface(self, runtime):
         if self.generate_report:
@@ -58,19 +52,19 @@ class FASTRPT(nrc.SegmentationRC,
         return super(FASTRPT, self)._post_run_hook(runtime)
 
 
-class ReconAllInputSpecRPT(nrc.SVGReportCapableInputSpec,
-                           freesurfer.preprocess.ReconAllInputSpec):
+class _ReconAllInputSpecRPT(nrc._SVGReportCapableInputSpec,
+                            freesurfer.preprocess.ReconAllInputSpec):
     pass
 
 
-class ReconAllOutputSpecRPT(reporting.ReportCapableOutputSpec,
-                            freesurfer.preprocess.ReconAllOutputSpec):
+class _ReconAllOutputSpecRPT(reporting.ReportCapableOutputSpec,
+                             freesurfer.preprocess.ReconAllOutputSpec):
     pass
 
 
 class ReconAllRPT(nrc.SurfaceSegmentationRC, freesurfer.preprocess.ReconAll):
-    input_spec = ReconAllInputSpecRPT
-    output_spec = ReconAllOutputSpecRPT
+    input_spec = _ReconAllInputSpecRPT
+    output_spec = _ReconAllOutputSpecRPT
 
     def _post_run_hook(self, runtime):
         ''' generates a report showing nine slices, three per axis, of an
@@ -91,8 +85,8 @@ class ReconAllRPT(nrc.SurfaceSegmentationRC, freesurfer.preprocess.ReconAll):
         return super(ReconAllRPT, self)._post_run_hook(runtime)
 
 
-class MELODICInputSpecRPT(nrc.SVGReportCapableInputSpec,
-                          fsl.model.MELODICInputSpec):
+class _MELODICInputSpecRPT(nrc._SVGReportCapableInputSpec,
+                           fsl.model.MELODICInputSpec):
     out_report = File(
         'melodic_reportlet.svg', usedefault=True, desc='Filename for the visual'
                                                        ' report generated '
@@ -101,38 +95,71 @@ class MELODICInputSpecRPT(nrc.SVGReportCapableInputSpec,
                             'If not set the mask will be derived from the data.')
 
 
-class MELODICOutputSpecRPT(reporting.ReportCapableOutputSpec,
-                           fsl.model.MELODICOutputSpec):
+class _MELODICOutputSpecRPT(reporting.ReportCapableOutputSpec,
+                            fsl.model.MELODICOutputSpec):
     pass
 
 
-class MELODICRPT(reporting.ReportCapableInterface, fsl.MELODIC):
-    input_spec = MELODICInputSpecRPT
-    output_spec = MELODICOutputSpecRPT
+class MELODICRPT(fsl.MELODIC):
+    input_spec = _MELODICInputSpecRPT
+    output_spec = _MELODICOutputSpecRPT
+    _out_report = None
+
+    def __init__(self, generate_report=False, **kwargs):
+        super(MELODICRPT, self).__init__(**kwargs)
+        self.generate_report = generate_report
+
+    def _post_run_hook(self, runtime):
+        # Run _post_run_hook of super class
+        runtime = super(MELODICRPT, self)._post_run_hook(runtime)
+        # leave early if there's nothing to do
+        if not self.generate_report:
+            return runtime
+
+        NIWORKFLOWS_LOG.info('Generating report for MELODIC.')
+        _melodic_dir = runtime.cwd
+        if isdefined(self.inputs.out_dir):
+            _melodic_dir = self.inputs.out_dir
+        self._melodic_dir = os.path.abspath(_melodic_dir)
+
+        self._out_report = self.inputs.out_report
+        if not os.path.isabs(self._out_report):
+            self._out_report = os.path.abspath(os.path.join(runtime.cwd,
+                                                            self._out_report))
+
+        mix = os.path.join(self._melodic_dir, "melodic_mix")
+        if not os.path.exists(mix):
+            NIWORKFLOWS_LOG.warning("MELODIC outputs not found, assuming it didn't converge.")
+            self._out_report = self._out_report.replace('.svg', '.html')
+            snippet = '<h4>MELODIC did not converge, no output</h4>'
+            with open(self._out_report, 'w') as fobj:
+                fobj.write(snippet)
+            return runtime
+
+        self._generate_report()
+        return runtime
+
+    def _list_outputs(self):
+        try:
+            outputs = super(MELODICRPT, self)._list_outputs()
+        except NotImplementedError:
+            outputs = {}
+        if self._out_report is not None:
+            outputs['out_report'] = self._out_report
+        return outputs
 
     def _generate_report(self):
         from niworkflows.viz.utils import plot_melodic_components
         plot_melodic_components(melodic_dir=self._melodic_dir,
                                 in_file=self.inputs.in_files[0],
                                 tr=self.inputs.tr_sec,
-                                out_file=self.inputs.out_report,
+                                out_file=self._out_report,
                                 compress=self.inputs.compress_report,
                                 report_mask=self.inputs.report_mask)
 
-    def _post_run_hook(self, runtime):
-        ''' generates a report showing nine slices, three per axis, of an
-        arbitrary volume of `in_files`, with the resulting segmentation
-        overlaid '''
-        outputs = self.aggregate_outputs(runtime=runtime)
-        self._melodic_dir = outputs.out_dir
 
-        NIWORKFLOWS_LOG.info('Generating report for MELODIC')
-
-        return super(MELODICRPT, self)._post_run_hook(runtime)
-
-
-class ICA_AROMAInputSpecRPT(nrc.SVGReportCapableInputSpec,
-                            fsl.aroma.ICA_AROMAInputSpec):
+class _ICA_AROMAInputSpecRPT(nrc._SVGReportCapableInputSpec,
+                             fsl.aroma.ICA_AROMAInputSpec):
     out_report = File(
         'ica_aroma_reportlet.svg', usedefault=True, desc='Filename for the visual'
                                                          ' report generated '
@@ -141,14 +168,14 @@ class ICA_AROMAInputSpecRPT(nrc.SVGReportCapableInputSpec,
                             'If not set the mask will be derived from the data.')
 
 
-class ICA_AROMAOutputSpecRPT(reporting.ReportCapableOutputSpec,
-                             fsl.aroma.ICA_AROMAOutputSpec):
+class _ICA_AROMAOutputSpecRPT(reporting.ReportCapableOutputSpec,
+                              fsl.aroma.ICA_AROMAOutputSpec):
     pass
 
 
 class ICA_AROMARPT(reporting.ReportCapableInterface, fsl.ICA_AROMA):
-    input_spec = ICA_AROMAInputSpecRPT
-    output_spec = ICA_AROMAOutputSpecRPT
+    input_spec = _ICA_AROMAInputSpecRPT
+    output_spec = _ICA_AROMAOutputSpecRPT
 
     def _generate_report(self):
         from niworkflows.viz.utils import plot_melodic_components
