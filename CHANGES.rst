@@ -1,20 +1,168 @@
+1.2.6 (June 09, 2020)
+=====================
+Bug-fix release in the 1.2.x series addressing minor bugs encountered mostly
+within *sMRIPrep*.
+With thanks to Franziskus Liem for contributions.
+
+* FIX: Error conforming T1w images with differing zooms before ``recon-all`` (#534)
+* FIX: Restore and deprecate license argument to ``check_valid_fs_license`` (#538)
+* FIX: Allow anatomical derivatives to have ``run-`` entity (#539)
+
+1.2.5 (June 4, 2020)
+====================
+Bug-fix release that remedies an issue with packaging data
+
+* FIX: Packaging data (#535)
+
+1.2.4 (June 04, 2020)
+=====================
+Bug-fix release improving the FS license checking
+
+* ENH: Improve FS license checking (#533)
+
+1.2.3 (May 27, 2020)
+====================
+Bug-fix release addressing some downstream issues in *fMRIPrep*.
+
+* FIX: ``MultiLabel`` interpolations should not use ``float=True`` (#530)
+* FIX: Do not break figure-datatype derivatives by sessions (#529)
+* MNT: Update comments, minimum versions for setup requirements (#512)
+
+1.2.2 (May 26, 2020)
+====================
+A bug-fix release remedying a casting issue in DerivativesDataSink.
+
+* FIX: Non-integer data coercion initialization
+
+1.2.1 (May 26, 2020)
+====================
+A bug-fix release in the 1.2.x series. This ensures consistency of datatype (dataobj, header)
+when casting to a new type in DerivativesDataSink.
+
+* FIX: Ensure consistency when changing derivative datatype (#527)
+
+1.2.0 (May 21, 2020)
+====================
+First release in the 1.2.x series. This release includes a variety of enhancements
+and bug fixes, including a large scale refactoring of DerivativesDataSink.
+
+* FIX: Purge greedy lstrip from reports (#521)
+* FIX: Add DWI default patterns for dMRIPrep's reportlets (#504)
+* FIX: Merge/SplitSeries write to path of input image, instead of cwd (#503)
+* FIX: Better generalization and renaming+relocation in the API of ``extract_wm`` (#500)
+* FIX: Increase fault tolerance of DerivativesDataSink (#497)
+* FIX: Match N4-only workflow outputs to brain extraction workflow (#496)
+* FIX: Set default volumetric resolution within OutputReferencesAction to native (#494)
+* ENH: Upstream NiTransforms module from fMRIPrep (#525)
+* ENH: Improve DerivativesDataSink flexibility (#507) (#514) (#516)
+* ENH: Add utility function to quickly check for FS license (#505)
+* ENH: Add nibabel-based split and merge interfaces (#489)
+* ENH: Show registration reportlets inline within Jupyter notebooks (#493)
+* ENH: Ensure subcortical volume in CIFTI is in LAS orientation (#484)
+* ENH: Produce carpetplot from CIFTI file (#491)
+* ENH: Option to set DerivativesDataSink datatype (#492) (#495)
+* MAINT: Revert #496 -- N4-only workflow connections (#498)
+* MAINT: Transfer brainmask script from fMRIPrep (#488)
+
+1.1.x series
+============
+1.1.12 (March 19, 2020)
+-----------------------
+Bug-fix release in the 1.1.x series.
+
+  * FIX: Update naming patterns in figures.json (#483)
+  * FIX: Add CE agent to output figure filename templates (#482)
+
+1.1.11 (March 17, 2020)
+-----------------------
+Bug-fix release to improve CIFTI compatibility with workbench tools.
+
+  * FIX: Ensure BOLD and label orientations are equal (#477)
+
+1.1.10 (March 11, 2020)
+-----------------------
+Bug-fix release in the 1.1.x series.
+
+  * ENH: Overwrite attr's string conversion dunders (#475)
+
+1.1.9 (March 05, 2020)
+----------------------
+Bug-fix release in the 1.1.x series.
+
+This release contains maintenance actions on the CI infrastructure after
+migration to the `NiPreps organization <https://www.nipreps.org>`__.
+
+  * FIX: replace mutable ``list`` with ``tuple`` in ANTs' workflow (#473)
+  * MAINT: Pacify security patterns found by Codacy (#474)
+  * MAINT: Miscellaneous housekeeping (#472)
+  * MAINT: Fix test_masks (#470)
+  * MAINT: Use docker-registry for caching on CircleCI (#471)
+  * MAINT: Revise code coverage collection (#469)
+  * MAINT: Transfer to nipreps organization (#468)
+
+1.1.8 (February 26, 2020)
+-------------------------
+Bug-fix release in the 1.1.x series.
+
+This release includes some minor improvements to formatting of reports and derivative metadata.
+
+* FIX: Check fo valid qform before calculating change (#466) @effigies
+* ENH: Display errors as summary/details elements (#464) @effigies
+* ENH: Add a pure-Python ApplyMask interface, based on NiBabel (#463) @oesteban
+* MAINT: Replace ``os`` operations with ``pathlib``, indent JSON sidecars (#467) @mgxd
+
+1.1.7 (February 14, 2020)
+-------------------------
+Minor improvements to enable fMRIPrep 20.0.0 release.
+
+* ENH: Revise SpatialReference caching for ease of use, accessibility (#461) @mgxd
+* ENH: Downgrade log level for superfluous scans (#460) @mgxd
+* ENH: Enable optional BIDS entity filtering to data collection utility (#407) @bpinsard
+
+1.1.6 (February 7, 2020)
+------------------------
+Update NiBabel pinned version.
+
+* MAINT: Update nibabel's pin to >=3.0.1
+
+1.1.5 (February 6, 2020)
+------------------------
+A refactor of recently introduced spaces/references/spatial-references objects,
+and some methods for upstream pipelines.
+
+* ENH: Revision of spaces module for consistency (#457)
+* ENH: Add BIDS output version checker (#456)
+* ENH: Standard space querying (#455)
+* ENH: Add cache to ``SpatialReferences`` (#453)
+* ENH: Add helper function for cleaning a directory (#454)
+* FIX: Parsing of floats in ``ResampleImageBySpacing`` (#452)
+
+1.1.4 (January 28, 2020)
+------------------------
+Minor enhancements to better represent spaces/spatial-references,
+and increasing the test coverage of the Reports System (with thanks to J. Kent
+for the contribution):
+
+* ENH: Separate ``Space`` and ``SpatialReferences`` (#451)
+* ENH+TST: Add all valid entities to the default report specification (#447)
+
 1.1.3 (January 16, 2020)
-========================
+------------------------
 A fix/enhancement of the report generation system. With thanks to J. Kent for
 the contribution.
 
 * ENH/FIX: parse orderings to account for missing entities (#443)
 
 1.1.2 (December 17, 2019)
-=========================
+-------------------------
 Hotfix of 1.1.1
 
 * FIX: ``IntraModalMerge`` - Undefined input name used in ``_run_interface`` (#442)
 
 1.1.1 (December 17, 2019)
-=========================
-A bugfix release to support addressing `poldracklab/sdcflows#77
-<https://github.com/poldracklab/sdcflows/issues/77>`__.
+-------------------------
+A bugfix release to support addressing `nipreps/sdcflows#77
+<https://github.com/nipreps/sdcflows/issues/77>`__.
 With thanks to Alejandro De La Vega for contributions.
 
 * FIX: ``IntraModalMerge`` failed for dims (x, y, z, 1) (#441) @oesteban
@@ -22,7 +170,7 @@ With thanks to Alejandro De La Vega for contributions.
 * MAINT: Update nibabel to 3.0.0rc1 (#439) @mgxd
 
 1.1.0 (December 9, 2019)
-========================
+------------------------
 The first minor release of the niworkflows 1.x series. Numerous interfaces (GenerateCifti, CiftiNameSource, GiftiNameSource) have been changed to be compatible with HCP grayordinates.
 
 * ENH: CIFTI / fsLR density (#436) @mgxd
@@ -167,7 +315,7 @@ Hotfix addressing x-form issues on our ``antsBrainExtraction``'s interpretation.
 ---------------------
 A hotfix over latest hotfix.
 
-  * FIX: Minor bug introduced with #358 (`ed7a8e <https://github.com/poldracklab/niworkflows/commit/ed7a8e6ca350d06ff5f4d9fe8bd7ed2f06ada9ad>`__) @oesteban
+  * FIX: Minor bug introduced with #358 (`ed7a8e <https://github.com/nipreps/niworkflows/commit/ed7a8e6ca350d06ff5f4d9fe8bd7ed2f06ada9ad>`__) @oesteban
 
 0.9.1 (May 3, 2019)
 -------------------
@@ -391,18 +539,18 @@ With thanks to @mgxd for the new atlas.
 
 0.3.4 (February 22, 2018)
 -------------------------
-* [ENH] Remove extensions from the nifti header (`#226 <https://github.com/poldracklab/niworkflows/pull/226>`_)
-* [FIX] Fixing conda version (`#227 <https://github.com/poldracklab/niworkflows/pull/227>`_)
-* [TST] Speed-up long tests (`#225 <https://github.com/poldracklab/niworkflows/pull/225>`_)
-* [TST] Migrate to CircleCI 2.0 (`#224 <https://github.com/poldracklab/niworkflows/pull/224>`_)
+* [ENH] Remove extensions from the nifti header (`#226 <https://github.com/nipreps/niworkflows/pull/226>`_)
+* [FIX] Fixing conda version (`#227 <https://github.com/nipreps/niworkflows/pull/227>`_)
+* [TST] Speed-up long tests (`#225 <https://github.com/nipreps/niworkflows/pull/225>`_)
+* [TST] Migrate to CircleCI 2.0 (`#224 <https://github.com/nipreps/niworkflows/pull/224>`_)
 
 0.3.3
 -----
-* [ENH] Added SanitizeImage interface (https://github.com/poldracklab/niworkflows/pull/221)
+* [ENH] Added SanitizeImage interface (https://github.com/nipreps/niworkflows/pull/221)
 
 0.3.1
 -----
-* [FIX] broken normalization retries (https://github.com/poldracklab/niworkflows/pull/220)
+* [FIX] broken normalization retries (https://github.com/nipreps/niworkflows/pull/220)
 
 0.3.0
 -----
@@ -429,7 +577,7 @@ With thanks to @mgxd for the new atlas.
 
 0.2.4
 -----
-* [FIX] Regression of poldracklab/fmriprep#868 - updated nipy/nipype#2325
+* [FIX] Regression of nipreps/fmriprep#868 - updated nipy/nipype#2325
   to fix it.
 
 0.2.3

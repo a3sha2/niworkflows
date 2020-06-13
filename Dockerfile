@@ -1,5 +1,5 @@
 # Use Ubuntu 16.04 LTS
-FROM ubuntu:xenial-20161213
+FROM ubuntu:xenial-20191010
 
 # Pre-cache neurodebian key
 COPY docker/files/neurodebian.gpg /usr/local/etc/.neurodebian.gpg
@@ -147,22 +147,24 @@ RUN python -c "from matplotlib import font_manager" && \
     sed -i 's/\(backend *: \).*$/\1Agg/g' $( python -c "import matplotlib; print(matplotlib.matplotlib_fname())" )
 
 # Installing dev requirements (packages that are not in pypi)
-WORKDIR /src/
-COPY requirements.txt requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt && \
-    rm -rf $HOME/.cache/pip
-
 # Precaching atlases
-RUN python -c "from templateflow import api as tfapi; \
+RUN pip install --no-cache-dir "templateflow >= 0.6" && \
+    rm -rf $HOME/.cache/pip && \
+    python -c "from templateflow import api as tfapi; \
                tfapi.get(['MNI152Lin', 'MNI152NLin2009cAsym', 'OASIS30ANTs'], suffix='T1w'); \
                tfapi.get(['MNI152Lin', 'MNI152NLin2009cAsym', 'OASIS30ANTs'], desc='brain', suffix='mask'); \
+               tfapi.get(['MNI152NLin2009cAsym'], desc='fMRIPrep', suffix='boldref'); \
                tfapi.get('OASIS30ANTs', resolution=1, desc='4', suffix='dseg'); \
                tfapi.get(['OASIS30ANTs', 'NKI'], resolution=1, label='brain', suffix='probseg'); \
                tfapi.get(['OASIS30ANTs', 'NKI'], resolution=1, desc='BrainCerebellumRegistration', suffix='mask'); "
 
+WORKDIR /src/
 COPY . niworkflows/
-RUN pip install --no-cache-dir /src/niworkflows[all] && \
+WORKDIR /src/niworkflows/
+RUN pip install --no-cache-dir -e .[all] && \
     rm -rf $HOME/.cache/pip
+
+COPY docker/files/nipype.cfg /home/niworkflows/.nipype/nipype.cfg
 
 # Cleanup and ensure perms.
 RUN rm -rf $HOME/.npm $HOME/.conda $HOME/.empty && \
@@ -176,8 +178,8 @@ ARG VCS_REF
 LABEL org.label-schema.build-date=$BUILD_DATE \
       org.label-schema.name="niworkflows" \
       org.label-schema.description="niworkflows - NeuroImaging workflows" \
-      org.label-schema.url="https://github.com/poldracklab/niworkflows" \
+      org.label-schema.url="https://github.com/nipreps/niworkflows" \
       org.label-schema.vcs-ref=$VCS_REF \
-      org.label-schema.vcs-url="https://github.com/poldracklab/niworkflows" \
+      org.label-schema.vcs-url="https://github.com/nipreps/niworkflows" \
       org.label-schema.version=$VERSION \
       org.label-schema.schema-version="1.0"
